@@ -11,12 +11,13 @@ public class DriveSubsystem extends com.seattlesolvers.solverslib.command.Subsys
     private final DcMotorEx fl, fr, bl, br;
     private final Follower follower;
 
-    // Torque-current control constants (GoBilda 1177)
-    private static final double TPR        = 28.0;
-    private static final double I_STALL    = 9.2;
-    private static final double R_MOTOR    = 12.0 / I_STALL;
-    private static final double KEMF       = 0.0192;
-    private static final double MAX_CURRENT = 3.0;
+    // Motor constants — mirror RobotHardware so we avoid a dep cycle (hardware → subsystem → hardware)
+    // GoBilda 435 RPM (5202 Series) — 13.7:1 planetary, 384.5 PPR encoder
+    private static final double TPR         = 384.5;
+    private static final double R_MOTOR    = 12.0 / 9.2;
+    private static final double OMEGA_NOLOAD = 435.0 * 2.0 * Math.PI / 60.0;
+    private static final double KEMF        = (12.0 - 0.25 * R_MOTOR) / OMEGA_NOLOAD;
+    private static final double MAX_CURRENT = RobotHardware.DRIVE_MAX_CURRENT;
 
     public DriveSubsystem(RobotHardware hw, Follower follower) {
         this.fl = hw.fl;

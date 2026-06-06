@@ -16,10 +16,10 @@ public class HoodSubsystem extends com.seattlesolvers.solverslib.command.Subsyst
     }
 
     /**
-     * Set hood to a raw position (0–1). Clamped to hardstops.
+     * Set hood to a raw servo position (0–1), clamped to hardstops.
+     * Use setForDistance() for normal aiming; this is for manual override.
      */
     public void setRaw(double position) {
-        double clamped = RobotHardware.HOOD_LUT.get(0); // fallback; real call uses distance
         double p = clamp(position, RobotHardware.HOOD_MIN_POSITION, RobotHardware.HOOD_MAX_POSITION);
         hoodL.setPosition(p);
         hoodR.setPosition(p);

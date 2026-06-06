@@ -301,14 +301,20 @@ public class RobotHardware {
     // TORQUE-CURRENT CONTROL (drivetrain)
     // ─────────────────────────────────────────────────────────────
 
-    // GoBilda 1177 / yellow-jacket constants
-    private static final double TPR          = 28.0;        // ticks/rev
-    private static final double I_STALL      = 9.2;         // amps
-    private static final double R_MOTOR       = 12.0 / I_STALL; // ohms ≈ 1.30
-    private static final double KEMF         = 0.0192;      // V/(rad/s)
-    private static final double KTORQUE       = 0.0157;      // N-m/A
-
-    private static final double MAX_CURRENT  = 3.0;         // amps per motor
+    // GoBilda 435 RPM (5202 Series) — 13.7:1 planetary, 384.5 PPR encoder, 9.2A stall
+    private static final double DRIVE_TPR          = 384.5;       // ticks/rev (encoder PPR)
+    private static final double DRIVE_GEAR_RATIO  = 13.7;        // internal planetary gear ratio
+    private static final double DRIVE_I_STALL      = 9.2;         // amps
+    private static final double DRIVE_R_MOTOR     = 12.0 / DRIVE_I_STALL;  // ohms ≈ 1.30
+    // No-load: 435 RPM @ 12V, 0.25A
+    // back-EMF at no-load = 12 - 0.25 * R = 11.674V
+    // omega_no_load = 435 * 2π/60 = 45.55 rad/s
+    private static final double DRIVE_OMEGA_NOLOAD = 435.0 * 2.0 * Math.PI / 60.0; // rad/s
+    private static final double DRIVE_V_RESISTOR    = 0.25 * DRIVE_R_MOTOR;           // 0.326V
+    private static final double DRIVE_KEMF         = (12.0 - DRIVE_V_RESISTOR) / DRIVE_OMEGA_NOLOAD; // V/(rad/s) ≈ 0.256
+    // Stall torque = 18.7 kg·cm = 1.834 N·m; KTORQUE = 1.834 / 9.2 = 0.199 N·m/A
+    private static final double DRIVE_KTORQUE      = (18.7 * 0.01 * 9.81) / DRIVE_I_STALL; // N·m/A ≈ 0.199
+    public static final double DRIVE_MAX_CURRENT = 3.0; // amps per motor (tuned limit)
 
     /**
      * Apply torque-current control to all four drive motors.
@@ -322,13 +328,13 @@ public class RobotHardware {
 
         DcMotorEx[] motors = { fl, fr, bl, br };
         for (int i = 0; i < 4; i++) {
-            double vRaw = raw[i] * 12.0; // voltage from joystick
-            double omega = motors[i].getVelocity() / TPR * 2.0 * Math.PI; // rad/s
-            double vBackEmf = KEMF * omega;
+            double vRaw = raw[i] * 12.0;
+            double omega = motors[i].getVelocity() / DRIVE_TPR * 2.0 * Math.PI;
+            double vBackEmf = DRIVE_KEMF * omega;
 
-            double iTarget = Math.abs(raw[i]) < 0.01 ? 0.0 : MAX_CURRENT;
-            double vMin = vBackEmf - iTarget * R_MOTOR;
-            double vMax = vBackEmf + iTarget * R_MOTOR;
+            double iTarget = Math.abs(raw[i]) < 0.01 ? 0.0 : DRIVE_MAX_CURRENT;
+            double vMin = vBackEmf - iTarget * DRIVE_R_MOTOR;
+            double vMax = vBackEmf + iTarget * DRIVE_R_MOTOR;
             double vCmd = Range.clip(vRaw, Math.min(vMin, vMax), Math.max(vMin, vMax));
             motors[i].setPower(Range.clip(vCmd / batt, -1.0, 1.0));
         }

@@ -15,6 +15,9 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
 
     private double integralL = 0.0;
     private double integralR = 0.0;
+    private double prevErrL = 0.0;
+    private double prevErrR = 0.0;
+    private double loopTime = 0.001; // seconds; overwritten each update with real dt
 
     public FlywheelSubsystem(RobotHardware hw) {
         this.motorL = hw.flywheelL;
@@ -41,13 +44,14 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
 
     /**
      * PIDF velocity loop for both flywheel motors.
-     * Uses SolversLib PIDF — no FTC-SDK PIDFController.
-     * Integral is accumulated per motor with anti-windup clamping.
+     * Uses a manual loop with SolversLib PIDF — no FTC-SDK PIDFController.
+     * Integral and derivative are accumulated per motor with anti-windup clamping.
+     *
+     * @param dt  loop time in seconds (pass loopTimer.seconds() from the OpMode)
      */
-    public void update() {
+    public void update(double dt) {
         double target = getTargetVelocity();
         double batt = voltageSensor.getVoltage();
-        double loopTime = 0.001; // seconds (~1 ms per loop)
 
         double velL = motorL.getVelocity();
         double velR = motorR.getVelocity();
@@ -56,8 +60,14 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
         double errR = target - velR;
 
         // Accumulate integral with anti-windup
-        integralL = clamp(integralL + errL * loopTime, -12.0, 12.0);
-        integralR = clamp(integralR + errR * loopTime, -12.0, 12.0);
+        integralL = clamp(integralL + errL * dt, -12.0, 12.0);
+        integralR = clamp(integralR + errR * dt, -12.0, 12.0);
+
+        // Derivative: de/dt
+        double derivL = (errL - prevErrL) / dt;
+        double derivR = (errR - prevErrR) / dt;
+        prevErrL = errL;
+        prevErrR = errR;
 
         double kpL = RobotHardware.FLYWHEEL_L_KP;
         double kiL = RobotHardware.FLYWHEEL_L_KI;
@@ -69,19 +79,24 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
         double kdR = RobotHardware.FLYWHEEL_R_KD;
         double kfR = RobotHardware.FLYWHEEL_R_KF;
 
-        // PIDF: kP*e + kI*∫e + kF*target
-        // Note: kD is omitted — derivative of motor velocity (not error) is unreliable
-        // without a prior velocity sample. Use kI to absorb steady-state error.
-        double powerL = kpL * errL + kiL * integralL + kfL * target;
-        double powerR = kpR * errR + kiR * integralR + kfR * target;
+        // PIDF: kP*e + kI*∫e + kD*de/dt + kF*target
+        double powerL = kpL * errL + kiL * integralL + kdL * derivL + kfL * target;
+        double powerR = kpR * errR + kiR * integralR + kdR * derivR + kfR * target;
 
         motorL.setPower(Range.clip(powerL / batt, -1, 1));
         motorR.setPower(Range.clip(powerR / batt, -1, 1));
     }
 
+    /** Legacy zero-argument update — assumes 1 ms loop. Prefer update(double dt). */
+    public void update() {
+        update(0.001);
+    }
+
     public void reset() {
         integralL = 0.0;
         integralR = 0.0;
+        prevErrL = 0.0;
+        prevErrR = 0.0;
     }
 
     public void stop() {
