@@ -200,11 +200,11 @@ public class RobotHardware {
     public org.bylazar.ftcontrol.panels.Panels panels;
     public com.seattlesolvers.solverslib.util.TelemetryData telemetryData;
 
-    // Live flywheel velocity offset (modified by gamepad2 dpad)
-    public double flywheelVelocityOffset = 0.0;
+    // Live flywheel velocity offset (modified by gamepad2 dpad) — static for tuning access
+    public static double flywheelVelocityOffset = 0.0;
 
-    // Live hood angle offset (modified by gamepad2 dpad)
-    public double hoodAngleOffset = 0.0;
+    // Live hood angle offset (modified by gamepad2 dpad) — static for tuning access
+    public static double hoodAngleOffset = 0.0;
 
     // ─────────────────────────────────────────────────────────────
     // INIT

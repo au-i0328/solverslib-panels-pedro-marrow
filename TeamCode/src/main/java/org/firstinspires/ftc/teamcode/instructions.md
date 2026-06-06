@@ -34,8 +34,8 @@ isReadytoShoot is determined by: state = ALIGNED, Flywheel getVelocity within ra
 When isReadytoShoot = true, vibrate gamepad with 2 short bursts of 50ms
 
 Robot Hardware should initialize the following: 
-Motor FL, FR, BL, BR (FR and BR Direction Reverse), flywheelL (run with encoder), flywheelR (run with encoder), intake
-Odom_pods para perpend
+Motor FL, FR, BL, BR (FR and BR Direction Reverse) (Drive Motors are 435 rpm gobilda motors geared using 27:24), flywheelL (run with encoder), flywheelR (run with encoder) (flywheels are 6000rpm gobilda motors), intake (1150 rpm gobilda motor geared to aroundd 2000 rpm)
+Odom_pods para perpend (gobilda odometry pods) ONLY 2 ODOM PODS
 IMU imu (control hub internal imu, pass parameters UP and LEFT)
 Servo hoodL hoodR gate
 Limelight Camera limelight (public void init() {
@@ -44,7 +44,7 @@ Limelight Camera limelight (public void init() {
     limelight.start(); // This tells Limelight to start looking!
 })
 
-When the opmode is initatilized, allow gamepad1 to select alliance by pressing Triangle and Circle, Triangle = RED, Circle = BLUE.
+When the opmode is initatilized, allow gamepad1 to select alliance by pressing Triangle and Circle, Triangle = RED, Circle = BLUE. Do not allow changing of alliance when op mode is played
 
 Alliance = RED: limelight set pipeline 0, set goal coords to RED COORDS
 Alliance = BLUE: limelight set pipeline 1, set goal coords to BLUE COORDS
@@ -149,3 +149,7 @@ You must not use Thread.sleep() for the shoot delay. You must use a non-blocking
 Integrate the use of a FTC Panels to allow dynamic tuning of variables and graphing of telemetry data. 
 
 For telemetry, the following info is necessary: ALliance, Robot State, Both flywheel's velocity, gate position, isReadyToShoot?, Limelight Distance, Robot Pose and Heading, the current value for offsets
+
+Do not use ftc-sdk's built in PIDF controller, rather use solverslib's PIDF controller. Avoid using any functions from the ftc-sdk if an alternative exsits in solverslib.
+
+Robot pose should be stored so when coming to teleop from auto the pose is correct. The pose should also persist across teleop plays. So when i stop and play the teleop op mode again the pose is persistent.
