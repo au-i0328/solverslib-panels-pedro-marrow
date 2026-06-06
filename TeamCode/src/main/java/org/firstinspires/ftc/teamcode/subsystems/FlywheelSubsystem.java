@@ -1,7 +1,6 @@
 package org.firstinspires.ftc.teamcode.subsystems;
 
 import com.seattlesolvers.solverslib.hardware.MotorEx;
-import com.seattlesolvers.solverslib.hardware.Motor;
 import com.seattlesolvers.solverslib.util.SimpleMotorFeedforward;
 
 /**

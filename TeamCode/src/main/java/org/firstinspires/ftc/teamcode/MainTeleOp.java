@@ -103,7 +103,7 @@ public class MainTeleOp extends CommandOpMode {
         hw.initLocalizer();
 
         // Subsystems
-        drive    = new DriveSubsystem(hw, follower);
+        drive    = new DriveSubsystem(hw, null);
         flywheel = new FlywheelSubsystem(hw);
         intake   = new IntakeSubsystem(hw);
         gate     = new GateSubsystem(hw);
@@ -478,8 +478,8 @@ public class MainTeleOp extends CommandOpMode {
         telemetryData.addData("isReadyToShoot", ready);
         telemetryData.addData("Share override", shareOverride);
         telemetryData.addData("Limelight dist (in)", limelightDist);
-        telemetryData.addData("Robot X", robotX);
-        telemetryData.addData("Robot Y", robotY);
+        telemetryData.addData("Pose X", robotX);
+        telemetryData.addData("Pose Y", robotY);
         telemetryData.addData("Robot H (deg)", Math.toDegrees(robotH));
         telemetryData.addData("Vel offset", RobotHardware.flywheelVelocityOffset);
         telemetryData.addData("Hood offset", RobotHardware.hoodAngleOffset);

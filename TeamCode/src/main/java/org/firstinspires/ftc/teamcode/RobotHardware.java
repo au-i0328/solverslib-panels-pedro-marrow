@@ -10,8 +10,10 @@ import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.HardwareMap;
 import com.seattlesolvers.solverslib.hardware.servos.ServoEx;
+import com.seattlesolvers.solverslib.hardware.servos.ServoExGroup;
 import com.seattlesolvers.solverslib.hardware.MotorEx;
 import com.seattlesolvers.solverslib.hardware.Motor;
+import com.seattlesolvers.solverslib.hardware.motors.Motor.GoBILDA;
 import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
@@ -193,7 +195,7 @@ public class RobotHardware {
     public MotorEx fl, fr, bl, br;
     public MotorEx flywheelL, flywheelR;
     public Motor intake;
-    public ServoEx hoodL, hoodR;
+    public ServoExGroup hood;
     public ServoEx gate;
     public IMU imu;
     public LynxModule controlHub;
@@ -215,19 +217,19 @@ public class RobotHardware {
 
     public void init(@NonNull HardwareMap hwMap) {
         // Drive motors
-        fl = new MotorEx(hwMap, "FL");
-        fr = new MotorEx(hwMap, "FR");
-        bl = new MotorEx(hwMap, "BL");
-        br = new MotorEx(hwMap, "BR");
+        fl = new MotorEx(hwMap, "FL", GoBILDA.RPM_435);
+        fr = new MotorEx(hwMap, "FR", GoBILDA.RPM_435);
+        bl = new MotorEx(hwMap, "BL", GoBILDA.RPM_435);
+        br = new MotorEx(hwMap, "BR", GoBILDA.RPM_435);
 
         fr.setInverted(true);
         br.setInverted(true);
 
-        // Drivetrain motors: coast when power = 0 (so auto-align doesn't fight brake)
-        fl.setZeroPowerBehavior(Motor.ZeroPowerBehavior.FLOAT);
-        fr.setZeroPowerBehavior(Motor.ZeroPowerBehavior.FLOAT);
-        bl.setZeroPowerBehavior(Motor.ZeroPowerBehavior.FLOAT);
-        br.setZeroPowerBehavior(Motor.ZeroPowerBehavior.FLOAT);
+        // Drivetrain motors: BRAKE so they resist motion when sticks center
+        fl.setZeroPowerBehavior(Motor.ZeroPowerBehavior.BRAKE);
+        fr.setZeroPowerBehavior(Motor.ZeroPowerBehavior.BRAKE);
+        bl.setZeroPowerBehavior(Motor.ZeroPowerBehavior.BRAKE);
+        br.setZeroPowerBehavior(Motor.ZeroPowerBehavior.BRAKE);
 
         // Flywheel motors — MotorEx wraps DcMotorEx, encoder always on
         flywheelL = new MotorEx(hwMap, "flywheelL");
@@ -238,14 +240,12 @@ public class RobotHardware {
         // Intake motor
         intake = new Motor(hwMap, "intake");
 
-        // Servos — hood uses ServoEx with power caching
-        // setRange(0, 1) keeps the 0–1 position semantics; hardstops enforced by
-        // HoodSubsystem via clamp() so the effective range matches HOOD_MIN/MAX_POSITION
-        hoodL = new ServoEx(hwMap, "hoodL");
-        hoodR = new ServoEx(hwMap, "hoodR");
-        hoodL.setRange(0, 1);
-        hoodR.setRange(0, 1);
-        gate   = new ServoEx(hwMap, "gate");
+        // Phase 2 — reverse the right hood servo so the group can accept a single value
+        ServoEx _hoodL = new ServoEx(hwMap, "hoodL");
+        ServoEx _hoodR = new ServoEx(hwMap, "hoodR");
+        _hoodR.setInverted(true);
+        hood = new ServoExGroup(_hoodL, _hoodR);
+        gate = new ServoEx(hwMap, "gate");
         gate.setPosition(GATE_CLOSE_POSITION);
 
         // IMU — UP + LEFT orientation for Control Hub internal IMU

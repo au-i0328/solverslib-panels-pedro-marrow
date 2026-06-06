@@ -19,7 +19,6 @@ import org.firstinspires.ftc.teamcode.commands.LaunchZoneRTPCommand;
 import org.firstinspires.ftc.teamcode.commands.RunToPointCommand;
 import org.firstinspires.ftc.teamcode.commands.ShootCommand;
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
-import org.firstinspires.ftc.teamcode.subsystems.DriveSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.FlywheelSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.GateSubsystem;
 import org.firstinspires.ftc.teamcode.subsystems.HoodSubsystem;
@@ -47,7 +46,6 @@ public class MainAuto extends CommandOpMode {
     private Follower follower;
 
     // Subsystems
-    private DriveSubsystem drive;
     private FlywheelSubsystem flywheel;
     private IntakeSubsystem intake;
     private GateSubsystem gate;
@@ -97,7 +95,6 @@ public class MainAuto extends CommandOpMode {
         hw.initLocalizer();
 
         // Subsystems
-        drive    = new DriveSubsystem(hw, follower);
         flywheel = new FlywheelSubsystem(hw);
         intake   = new IntakeSubsystem(hw);
         gate     = new GateSubsystem(hw);
@@ -113,7 +110,7 @@ public class MainAuto extends CommandOpMode {
         telemetryData = new TelemetryData(hw.panels.getTelemetry());
 
         // Register subsystems
-        registerSubsystems(List.of(drive, flywheel, intake, gate, hood));
+        registerSubsystems(List.of(flywheel, intake, gate, hood));
 
         // Bulk caching
         hw.clearBulkCache();
