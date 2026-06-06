@@ -1,34 +1,49 @@
 package org.firstinspires.ftc.teamcode.subsystems;
 
+import com.qualcomm.robotcore.hardware.DcMotorEx.CurrentUnit;
 import com.seattlesolvers.solverslib.hardware.MotorEx;
-import com.seattlesolvers.solverslib.util.SimpleMotorFeedforward;
 
 /**
  * Flywheel subsystem using SolversLib MotorEx in VelocityControl.
  *
- * Closed-loop velocity is implemented as:
- *   power = (kP*e + kI*∫e + kD*de/dt + kF*targetVelocity + kS*sign + kV*targetVel + kA*accel) / batteryVoltage
+ * Voltage loop per motor (per cycle):
  *
- * The PIDF terms and feedforward are computed manually for clarity and correctness.
- * SimpleMotorFeedforward provides kS/kV/kA without the kF term (kF is in the PID sum).
+ *   ω_measured  = motor.getVelocity() / TPR × 2π         (rad/s from ticks/s)
+ *   vBackEmf    = K_EMF × ω_measured                    (opposes applied voltage)
+ *
+ *   PID corrective voltage:
+ *     err        = targetVelocity − ω_measured
+ *     integral   = clamp(integral + err·dt, −12, 12)
+ *     derivative = (err − prevErr) / dt
+ *     vPID      = kP·err + kI·integral + kD·derivative + kF·targetVelocity
+ *
+ *   vTarget     = vPID + vBackEmf                        (back-EMF compensation)
+ *
+ *   Torque limiting (clamp voltage within what produces MAX_CURRENT):
+ *     iTarget    = MAX_CURRENT  (always active — flywheels are load-bearing)
+ *     vMin       = vBackEmf − iTarget × R_MOTOR
+ *     vMax       = vBackEmf + iTarget × R_MOTOR
+ *     vClamped   = clamp(vTarget, vMin, vMax)
+ *
+ *   power       = vClamped / batteryVoltage
  */
 public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Subsystem {
     private final MotorEx motorL;
     private final MotorEx motorR;
 
-    // Velocity targets in ticks/sec — mutable so gamepad offsets can adjust them
+    // Velocity target in ticks/sec — mutable so gamepad offsets adjust it live
     public double targetVelocity = RobotHardware.FLYWHEEL_TARGET_VELOCITY;
 
     // Per-motor PIDF state
     private double integralL = 0.0;
     private double integralR = 0.0;
-    private double prevErrL = 0.0;
-    private double prevErrR = 0.0;
+    private double prevErrL  = 0.0;
+    private double prevErrR  = 0.0;
 
     public FlywheelSubsystem(RobotHardware hw) {
         this.motorL = hw.flywheelL;
         this.motorR = hw.flywheelR;
-        // Motors are in VelocityControl mode from RobotHardware.init()
+        // VelocityControl mode and feedforward are set in RobotHardware.init()
     }
 
     public void addOffset(double delta) {
@@ -49,63 +64,85 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
     }
 
     /**
-     * Closed-loop velocity update — call every loop.
-     *
-     * Loop equation (per motor):
-     *   voltage = kP*e + kI*∫e + kD*de/dt + kF*target + feedforward(target)
-     *   power   = voltage / batteryVoltage
+     * Voltage-based closed-loop velocity update — call every loop.
      *
      * @param dt loop time in seconds (pass loopTimer.seconds() from the OpMode)
      */
     public void update(double dt) {
-        double velL = motorL.getVelocity();
-        double velR = motorR.getVelocity();
         double batt = RobotHardware.batteryVoltage();
 
-        // PIDF error signals
-        double errL = targetVelocity - velL;
-        double errR = targetVelocity - velR;
+        applyVoltageLoop(motorL, targetVelocity, dt, batt,
+                RobotHardware.FLYWHEEL_TPR,
+                RobotHardware.FLYWHEEL_K_EMF,
+                RobotHardware.FLYWHEEL_R,
+                RobotHardware.FLYWHEEL_MAX_CURRENT,
+                RobotHardware.FLYWHEEL_L_KP,
+                RobotHardware.FLYWHEEL_L_KI,
+                RobotHardware.FLYWHEEL_L_KD,
+                RobotHardware.FLYWHEEL_L_KF,
+                new double[]{integralL, prevErrL});
 
-        // Accumulate integral with anti-windup (clamp to ±12 V range)
-        integralL = clamp(integralL + errL * dt, -12.0, 12.0);
-        integralR = clamp(integralR + errR * dt, -12.0, 12.0);
+        applyVoltageLoop(motorR, targetVelocity, dt, batt,
+                RobotHardware.FLYWHEEL_TPR,
+                RobotHardware.FLYWHEEL_K_EMF,
+                RobotHardware.FLYWHEEL_R,
+                RobotHardware.FLYWHEEL_MAX_CURRENT,
+                RobotHardware.FLYWHEEL_R_KP,
+                RobotHardware.FLYWHEEL_R_KI,
+                RobotHardware.FLYWHEEL_R_KD,
+                RobotHardware.FLYWHEEL_R_KF,
+                new double[]{integralR, prevErrR});
+    }
 
-        // Derivative: de/dt
-        double derivL = (errL - prevErrL) / dt;
-        double derivR = (errR - prevErrR) / dt;
-        prevErrL = errL;
-        prevErrR = errR;
+    /**
+     * Voltage loop for a single motor.
+     *
+     * Arrays are used for integral/prevErr so the caller can persist state between loops
+     * without exposing mutable fields.
+     */
+    private void applyVoltageLoop(
+            MotorEx motor,
+            double targetVel,   // ticks/s
+            double dt,
+            double batt,
+            double tpr,
+            double kEmf,
+            double rMotor,
+            double maxCurrent,
+            double kp, double ki, double kd, double kf,
+            double[] state     // [0] = integral, [1] = prevErr (mutated in place)
+    ) {
+        double omegaMeas  = motor.getVelocity() / tpr * 2.0 * Math.PI; // rad/s
+        double vBackEmf  = kEmf * omegaMeas;
 
-        // PIDF terms (kF is the feedforward velocity constant, separate from SimpleMotorFeedforward)
-        double kpL = RobotHardware.FLYWHEEL_L_KP;
-        double kiL = RobotHardware.FLYWHEEL_L_KI;
-        double kdL = RobotHardware.FLYWHEEL_L_KD;
-        double kfL = RobotHardware.FLYWHEEL_L_KF;
+        // PID on velocity error
+        double err = targetVel - motor.getVelocity(); // ticks/s error
+        state[0] = clamp(state[0] + err * dt, -12.0, 12.0);
+        double deriv = (err - state[1]) / dt;
+        state[1] = err;
 
-        double kpR = RobotHardware.FLYWHEEL_R_KP;
-        double kiR = RobotHardware.FLYWHEEL_R_KI;
-        double kdR = RobotHardware.FLYWHEEL_R_KD;
-        double kfR = RobotHardware.FLYWHEEL_R_KF;
+        // PIDF: kP·e + kI·∫e + kD·de/dt + kF·targetVelocity
+        double vPID = kp * err + ki * state[0] + kd * deriv + kf * targetVel;
 
-        // PIDF: kP*e + kI*∫e + kD*de/dt + kF*targetVelocity
-        double voltageL = kpL * errL + kiL * integralL + kdL * derivL + kfL * targetVelocity;
-        double voltageR = kpR * errR + kiR * integralR + kdR * derivR + kfR * targetVelocity;
+        // Add back-EMF compensation so vPID represents error correction around the
+        // actual motor operating point rather than around zero
+        double vTarget = vPID + vBackEmf;
 
-        // SolversLib SimpleMotorFeedforward: voltage = kS*sign(v) + kV*velocity + kA*accel
-        // kS ≈ 0.15 V (overcomes static friction at ~0.125 A × 1.2 Ω)
-        // kV = 12 V / maxVelocity → set(1.0) = maxVelocity
-        double maxVel = RobotHardware.FLYWHEEL_TARGET_VELOCITY;
-        double kSL = 0.15;
-        double kVL = 12.0 / maxVel;
-        double kSR = 0.15;
-        double kVR = 12.0 / maxVel;
+        // Torque limiting — clamp voltage to what produces maxCurrent
+        double iTarget = maxCurrent;
+        double vMin = vBackEmf - iTarget * rMotor;
+        double vMax = vBackEmf + iTarget * rMotor;
+        double vClamped = Math.max(vMin, Math.min(vMax, vTarget));
+        double power = vClamped / batt;
 
-        double ffL = kSL * Math.signum(targetVelocity) + kVL * targetVelocity;
-        double ffR = kSR * Math.signum(targetVelocity) + kVR * targetVelocity;
+        motor.set(power);
 
-        // Total voltage → motor power fraction
-        motorL.set((voltageL + ffL) / batt);
-        motorR.set((voltageR + ffR) / batt);
+        // Update caller's integral/prevErr state
+        if (motor == motorL) {
+            integralL = state[0]; prevErrL = state[1];
+        } else {
+            integralR = state[0]; prevErrR = state[1];
+        }
     }
 
     /** Legacy zero-argument update — assumes 1 ms loop. Prefer update(double dt). */
@@ -114,10 +151,8 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
     }
 
     public void reset() {
-        integralL = 0.0;
-        integralR = 0.0;
-        prevErrL = 0.0;
-        prevErrR = 0.0;
+        integralL = 0.0; integralR = 0.0;
+        prevErrL  = 0.0; prevErrR  = 0.0;
     }
 
     public void stop() {

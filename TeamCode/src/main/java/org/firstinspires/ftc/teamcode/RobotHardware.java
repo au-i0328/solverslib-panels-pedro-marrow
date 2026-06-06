@@ -41,20 +41,63 @@ public class RobotHardware {
 
     public enum Alliance { RED, BLUE }
 
-    /** Goal position in Pedro coordinates (origin = bottom-left, [0,144]). */
+    /** Goal position in Pedro coordinates (origin = bottom-left, [0,144]).
+     *  Switched at runtime in init_loop() to select the correct alliance target. */
     public static Point GOAL_COORDS = new Point(144, 72);
 
-    public static Point RED_GOAL_COORDS = new Point(144, 72);
-    public static Point BLUE_GOAL_COORDS = new Point(0, 72);
+    /** Red alliance goal coordinates (Pedro field, origin = bottom-left). */
+    public static Point RED_GOAL_COORDS   = new Point(144, 144);
 
-    /** Base zone center positions. */
-    public static Point RED_BASE_COORDS = new Point(120, 20);
-    public static Point BLUE_BASE_COORDS = new Point(24, 20);
+    /** Blue alliance goal coordinates (Pedro field, origin = bottom-left). */
+    public static Point BLUE_GOAL_COORDS  = new Point(0, 144);
 
-    /** Launch zone boundary line: 5 cm (≈2 inches) inboard from the scoring wall. */
-    public static Point LAUNCH_ZONE_NEAR_LEFT = new Point(142, 72);
-    public static Point LAUNCH_ZONE_NEAR_RIGHT = new Point(142, 72);
-    // The actual 5 cm offset boundary will be computed relative to the scoring wall.
+    // ─────────────────────────────────────────────────────────────
+    // LAUNCH ZONE POLYGONS (Marrow PolygonZone) — pull-to-zone RTP
+    // ─────────────────────────────────────────────────────────────
+
+    /** Close launch zone — right-triangle in the scoring corner (Pedro coords). */
+    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone CLOSE_LAUNCH_ZONE =
+            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(142, 144),
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(72,  74),
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(2,   144)
+            );
+
+    /** Far launch zone — smaller triangle toward field center (Pedro coords). */
+    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone FAR_LAUNCH_ZONE =
+            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(50,  0),
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(72,  22),
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(94,  0)
+            );
+
+    // ─────────────────────────────────────────────────────────────
+    // BASE ZONE POLYGONS (Marrow PolygonZone) — pull-to-base RTP
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Blue alliance base zone — 20×20 in² square centered at (105.5, 33.5).
+     * Represent the robot as an 18×18 in² zone for collision padding.
+     */
+    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone BLUE_BASE_ZONE =
+            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(105.5, 33.5),
+                    20, 20
+            );
+
+    /**
+     * Red alliance base zone — 20×20 in² square centered at (38.5, 33.5).
+     * Represent the robot as an 18×18 in² zone for collision padding.
+     */
+    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone RED_BASE_ZONE =
+            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(38.5, 33.5),
+                    20, 20
+            );
+
+    /** Robot collision zone — 18×18 in² square for base-zone pull calculation. */
+    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone ROBOT_ZONE =
+            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(18, 18);
 
     // ─────────────────────────────────────────────────────────────
     // FLYWHEEL
@@ -77,6 +120,58 @@ public class RobotHardware {
 
     // Flywheel velocity offset increments (gamepad2 dpad)
     public static double FLYWHEEL_VELOCITY_OFFSET_JUMP = 50.0;
+
+    // ─────────────────────────────────────────────────────────────
+    // FLYWHEEL MOTOR PHYSICS  (GoBilda 5202 435 RPM — 13.7:1 planetary)
+    // ─────────────────────────────────────────────────────────────
+
+    public static double FLYWHEEL_TPR    = 384.5;  // ticks/revolution
+    public static double FLYWHEEL_RPM    = 6000.0;  // no-load RPM at 12 V
+    public static double FLYWHEEL_OMEGA  = FLYWHEEL_RPM * 2.0 * Math.PI / 60.0; // rad/s
+
+    /** Motor stall current (amps). */
+    public static double FLYWHEEL_I_STALL = 9.2;
+    /** Winding resistance (Ω). */
+    public static double FLYWHEEL_R       = 12.0 / FLYWHEEL_I_STALL;           // Ω  ≈ 1.30
+    /** Voltage drop across winding resistance at no-load current (~0.25 A). */
+    public static double FLYWHEEL_V_RES   = 0.25 * FLYWHEEL_R;                  // V  ≈ 0.326
+    /**
+     * Back-EMF constant (V/(rad/s)).
+     * Derived: V = V_res + kEMF·ω  →  kEMF = (12 − V_res) / ω_noloload
+     */
+    public static double FLYWHEEL_K_EMF   = (12.0 - FLYWHEEL_V_RES) / FLYWHEEL_OMEGA; // V/(rad/s) ≈ 0.256
+
+    /**
+     * Max current per flywheel motor (amps) — triggers voltage clamping.
+     * Tunable live via Panels.
+     */
+    public static double FLYWHEEL_MAX_CURRENT = 3.0;
+
+    // ─────────────────────────────────────────────────────────────
+    // INTAKE MOTOR PHYSICS  (GoBilda 5202 312 RPM — 19.2:1 planetary)
+    // ─────────────────────────────────────────────────────────────
+
+    public static double INTAKE_TPR   = 384.5;
+    public static double INTAKE_RPM   = 1150.0;
+    public static double INTAKE_I_STALL = 9.2;
+    public static double INTAKE_R      = 12.0 / INTAKE_I_STALL;           // Ω  ≈ 1.30
+    public static double INTAKE_V_RES  = 0.25 * INTAKE_R;                  // V  ≈ 0.326
+    public static double INTAKE_OMEGA  = INTAKE_RPM * 2.0 * Math.PI / 60.0; // rad/s
+    public static double INTAKE_K_EMF  = (12.0 - INTAKE_V_RES) / INTAKE_OMEGA; // V/(rad/s)
+
+    /**
+     * Max current per intake motor (amps) — triggers voltage clamping.
+     * Tunable live via Panels.
+     */
+    public static double INTAKE_MAX_CURRENT = 4.0;
+
+    /**
+     * Intake no-load max velocity in ticks/sec (GoBilda 312 RPM, 384.5 CPR).
+     * Used to derive kV = 12 / maxVel for feedforward.
+     * Note: actual max velocity will be slightly lower due to load; the voltage loop
+     * corrects for this. Change INTAKE_RPM in RobotHardware to match your motor.
+     */
+    public static double INTAKE_MAX_VELOCITY = INTAKE_TPR * INTAKE_RPM / 60.0; // ticks/s ≈ 2005
 
     // ─────────────────────────────────────────────────────────────
     // SHOOT SEQUENCE
@@ -167,14 +262,6 @@ public class RobotHardware {
     public static double VECTOR_WEIGHT_DRIVER = 0.6;
 
     // ─────────────────────────────────────────────────────────────
-    // ODOMETRY INITIAL POSE
-    // ─────────────────────────────────────────────────────────────
-
-    public static double ODOM_INIT_X      = 72.0;
-    public static double ODOM_INIT_Y      = 72.0;
-    public static double ODOM_INIT_ANGLE  = 0.0; // radians
-
-    // ─────────────────────────────────────────────────────────────
     // KALMAN LOCALIZER TUNING
     // ─────────────────────────────────────────────────────────────
 
@@ -194,6 +281,8 @@ public class RobotHardware {
 
     public MotorEx fl, fr, bl, br;
     public MotorEx flywheelL, flywheelR;
+    public MotorEx odomPara;       // parallel pod — forward encoder (measures forward/straight)
+    public MotorEx odomPerpend;    // perpendicular pod — lateral encoder (measures strafing)
     public Motor intake;
     public ServoExGroup hood;
     public ServoEx gate;
@@ -231,14 +320,31 @@ public class RobotHardware {
         bl.setZeroPowerBehavior(Motor.ZeroPowerBehavior.BRAKE);
         br.setZeroPowerBehavior(Motor.ZeroPowerBehavior.BRAKE);
 
-        // Flywheel motors — MotorEx wraps DcMotorEx, encoder always on
+        // Odometry pods — dedicated encoder motors for Two-Wheel Localizer
+        // These should be on the two fastest encoder ports (0 and 3 on REV Control Hub)
+        odomPara    = new MotorEx(hwMap, "FL");
+        odomPerpend = new MotorEx(hwMap, "BR");
+
+        odomPara.setInverted(false);
+        odomPerpend.setInverted(false);
+
+        // Flywheel motors — MotorEx in VelocityControl.
+        // Feedforward: kV = 12 / maxVelocity so set(1.0) = max speed;
+        // kS = 0.15 V overcomes static friction.
         flywheelL = new MotorEx(hwMap, "flywheelL");
         flywheelR = new MotorEx(hwMap, "flywheelR");
         flywheelL.setRunMode(Motor.RunMode.VelocityControl);
         flywheelR.setRunMode(Motor.RunMode.VelocityControl);
 
-        // Intake motor
+        double flyMaxVel = FLYWHEEL_TPR * FLYWHEEL_RPM / 60.0; // ticks/s
+        double flyKV = 12.0 / flyMaxVel;
+        flywheelL.setFeedforwardCoefficients(0.15, flyKV);
+        flywheelR.setFeedforwardCoefficients(0.15, flyKV);
+
+        // Intake motor — no encoder, no feedforward, no velocity control.
+        // Driven via pure feedforward + voltage compensation in IntakeSubsystem.
         intake = new Motor(hwMap, "intake");
+        intake.setInverted(false);
 
         // Phase 2 — reverse the right hood servo so the group can accept a single value
         ServoEx _hoodL = new ServoEx(hwMap, "hoodL");
@@ -248,12 +354,13 @@ public class RobotHardware {
         gate = new ServoEx(hwMap, "gate");
         gate.setPosition(GATE_CLOSE_POSITION);
 
-        // IMU — UP + LEFT orientation for Control Hub internal IMU
-        // "UP" = logo pointing up; "LEFT" = USB port pointing left
+        // IMU — orientation read from pedroPathing.Constants so Pedro's TwoWheelLocalizer
+        // and RobotHardware use the same values. Update IMU_LOGO_FACING / IMU_USB_FACING
+        // in Constants.java to change both at once.
         imu = hwMap.get(IMU.class, "imu");
         RevHubOrientationOnRobot orientationOnRobot = new RevHubOrientationOnRobot(
-                RevHubOrientationOnRobot.LogoFacingDirection.UP,
-                RevHubOrientationOnRobot.UsbFacingDirection.LEFT
+                org.firstinspires.ftc.teamcode.pedroPathing.Constants.IMU_LOGO_FACING,
+                org.firstinspires.ftc.teamcode.pedroPathing.Constants.IMU_USB_FACING
         );
         imu.initialize(new IMU.Parameters(orientationOnRobot));
 
@@ -447,11 +554,7 @@ public class RobotHardware {
     }
 
     public static Point goalCoordsForAlliance(Alliance a) {
-        return a == Alliance.RED ? RED_GOAL_COORDS : BLUE_GOAL_COORDS;
-    }
-
-    public static Point baseCoordsForAlliance(Alliance a) {
-        return a == Alliance.RED ? RED_BASE_COORDS : BLUE_BASE_COORDS;
+        return (a == Alliance.RED) ? RED_GOAL_COORDS : BLUE_GOAL_COORDS;
     }
 
     // ─────────────────────────────────────────────────────────────

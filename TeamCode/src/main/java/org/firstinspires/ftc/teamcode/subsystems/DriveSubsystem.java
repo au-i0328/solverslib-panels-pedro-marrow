@@ -4,7 +4,6 @@ import com.pedropathing.follower.Follower;
 import com.seattlesolvers.solverslib.drivebase.MecanumDrive;
 import com.seattlesolvers.solverslib.geometry.Vector2d;
 import com.seattlesolvers.solverslib.hardware.MotorEx;
-import com.seattlesolvers.solverslib.hardware.Motor;
 import com.qualcomm.robotcore.hardware.DcMotorEx.CurrentUnit;
 
 /**
@@ -19,25 +18,19 @@ import com.qualcomm.robotcore.hardware.DcMotorEx.CurrentUnit;
  *                  → battery-scaled power → motor.set()
  *
  * Zero power behavior is BRAKE so the robot stops firmly when sticks center.
+ *
+ * Note: the parent MecanumDrive holds motor references; this class overrides
+ * driveFieldCentric() so the parent motor handles are never written to.
  */
 public class DriveSubsystem extends MecanumDrive {
 
-    // ── Per-motor handles ──────────────────────────────────────
-    private final MotorEx fl, fr, bl, br;
-
     // ── Motor physics (GoBilda 435 RPM — 13.7:1 planetary, 384.5 CPR) ──
-    private static final double TPR         = 384.5;         // ticks/revolution
-    private static final double I_STALL    = 9.2;          // amps at stall
-    private static final double R_MOTOR    = 12.0 / I_STALL;             // Ω  ≈ 1.30
-    private static final double V_RESISTOR  = 0.25 * R_MOTOR;             // V  ≈ 0.326  (0.25 A no-load)
-    // No-load omega: 435 RPM @ 12 V
+    private static final double TPR         = 384.5;                           // ticks/revolution
+    private static final double I_STALL    = 9.2;                             // amps at stall
+    private static final double R_MOTOR    = 12.0 / I_STALL;                  // Ω  ≈ 1.30
+    private static final double V_RESISTOR  = 0.25 * R_MOTOR;                  // V  ≈ 0.326
     private static final double OMEGA_NOLOAD = 435.0 * 2.0 * Math.PI / 60.0; // rad/s ≈ 45.55
-    // Back-EMF: V = V_resistor + kEMF·ω  →  kEMF = (12 − V_res) / ω_nl
-    private static final double K_EMF = (12.0 - V_RESISTOR) / OMEGA_NOLOAD; // V/(rad/s) ≈ 0.256
-
-    // rightSideMultiplier = −1 in MecanumDrive when autoInvert = true
-    // We replicate it here to apply correct sign after voltage control
-    private static final double RIGHT_SIDE = -1.0;
+    private static final double K_EMF = (12.0 - V_RESISTOR) / OMEGA_NOLOAD;   // V/(rad/s) ≈ 0.256
 
     /** Max current per motor (amps) — triggers voltage clamping. */
     public static double MAX_CURRENT = 3.0;
@@ -46,18 +39,17 @@ public class DriveSubsystem extends MecanumDrive {
     public static int STALL_CHECK_INTERVAL = 10;
 
     // ── State ─────────────────────────────────────────────────
-    private final MotorEx[] allMotors;
     private int  stallCounter = 0;
     private boolean stalling  = false;
+    private final MotorEx[] allMotors;
 
     public DriveSubsystem(RobotHardware hw, Follower follower) {
         super(true, hw.fl, hw.fr, hw.bl, hw.br);
 
-        this.fl = hw.fl;
-        this.fr = hw.fr;
-        this.bl = hw.bl;
-        this.br = hw.br;
-        this.allMotors = new MotorEx[]{ fl, fr, bl, br };
+        // Store handles so voltage control and stall detection can access motors directly.
+        // Parent MecanumDrive also holds references; this class fully overrides
+        // driveFieldCentric() so there is no dual-writing.
+        allMotors = new MotorEx[]{ hw.fl, hw.fr, hw.bl, hw.br };
 
         // kV = 12 V / maxVelocity → motor.set(1.0) = maxVelocity
         double maxVel = TPR * 435.0 / 60.0;  // ≈ 2769 ticks/sec for GoBilda 435 RPM
@@ -110,12 +102,13 @@ public class DriveSubsystem extends MecanumDrive {
 
         normalize(raw);
 
-        // Voltage + torque control — left side direct, right side inverted per MecanumDrive.rightSideMultiplier
+        // Right motors are hardware-inverted (fr.setInverted(true), br.setInverted(true))
+        // in RobotHardware.init(), so powers are passed directly.
         applyVoltageControl(
             raw[kFrontLeft],
-            raw[kFrontRight] * RIGHT_SIDE,
+            raw[kFrontRight],
             raw[kBackLeft],
-            raw[kBackRight]  * RIGHT_SIDE
+            raw[kBackRight]
         );
     }
 

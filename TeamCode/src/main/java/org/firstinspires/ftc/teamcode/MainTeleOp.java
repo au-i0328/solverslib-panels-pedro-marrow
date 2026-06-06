@@ -10,6 +10,7 @@ import com.seattlesolvers.solverslib.gamepad.GamepadEx;
 import com.seattlesolvers.solverslib.gamepad.GamepadKeys;
 import com.seattlesolvers.solverslib.util.TelemetryData;
 
+import org.firstinspires.ftc.teamcode.commands.BaseZoneRTPCommand;
 import org.firstinspires.ftc.teamcode.commands.LaunchZoneRTPCommand;
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.DriveSubsystem;
@@ -39,7 +40,7 @@ import java.util.List;
  *   dpad_left/right → adjust hood angle offset
  *   circle → return to INTAKE (disregards everything)
  *   share held → override isReadyToShoot = true while held
- *   share+option held → Base Zone RTP
+ *   gamepad2 left-stick + right-stick buttons held → Base Zone RTP
  *
  * Flywheels run at constant velocity throughout the match.
  * Hood aims from Limelight distance; kH compensation applies during SHOOT.
@@ -73,11 +74,17 @@ public class MainTeleOp extends CommandOpMode {
     // Loop timing
     private ElapsedTime loopTimer = new ElapsedTime();
 
+    // One-shot flag: prevents restorePoseFromSettings from running more than once per start
+    private boolean poseRestored = false;
+
     // Alliance selection (locked after first press)
     private boolean allianceLocked = false;
 
     // Launch Zone RTP command
     private LaunchZoneRTPCommand launchZoneRTP;
+
+    // Base Zone RTP command
+    private BaseZoneRTPCommand baseZoneRTP;
 
     // Shoot-hood: remember hood position at start of SHOOT for kH compensation
     private boolean shootHoodLocked = false;
@@ -95,9 +102,11 @@ public class MainTeleOp extends CommandOpMode {
         hw = new RobotHardware();
         hw.init(hardwareMap);
 
-        // Pedro Pathing Follower
+        // Rebuild constants so every OpMode restart picks up the latest Panels-tuned values
+        Constants.rebuild();
         follower = Constants.createFollower(hardwareMap);
-        follower.startTeleopDrive();
+        // Do NOT call follower.startTeleopDrive() — Pedro provides pose estimation only.
+        // DriveSubsystem handles all TeleOp motor writes via voltage-based control.
 
         // Init localizer
         hw.initLocalizer();
@@ -150,6 +159,17 @@ public class MainTeleOp extends CommandOpMode {
 
         // Launch Zone RTP
         launchZoneRTP = new LaunchZoneRTPCommand(
+            this::getRobotX,
+            this::getRobotY,
+            this::getRobotH,
+            () -> -driver.getLeftY(),
+            () -> -driver.getLeftX(),
+            fwd -> blendedFwd = fwd,
+            strafe -> blendedStrafe = strafe
+        );
+
+        // Base Zone RTP
+        baseZoneRTP = new BaseZoneRTPCommand(
             this::getRobotX,
             this::getRobotY,
             this::getRobotH,
@@ -217,6 +237,8 @@ public class MainTeleOp extends CommandOpMode {
         controller.setState(RobotState.INTAKE);
 
         // Restore pose from Marrow Settings if available (pose persistence across plays)
+        // poseRestored is a one-shot flag — read runs on first loop() call after start()
+        poseRestored = false;
         restorePoseFromSettings();
 
         loopTimer.reset();
@@ -229,20 +251,24 @@ public class MainTeleOp extends CommandOpMode {
         loopTimer.reset();
 
         // ── 1. LOCALIZATION ──────────────────────────────────────
+        // updateRobotOrientation must come BEFORE follower.update() so Pedro's
+        // TwoWheelLocalizer and the drift filter share the same yaw snapshot.
         limelight.updateRobotOrientation(hw.getYawRadians());
-        follower.update();
+        follower.update();  // Pedro runs its own vision update inside here
 
+        // Read raw odometry pose — Pedro has already applied its own MegaTag correction
+        // internally, so this is better-than-dead-reckoning raw input for the drift filter.
         double odoX = follower.getPose().getX();
         double odoY = follower.getPose().getY();
         double odoH = follower.getPose().getHeading();
 
-        hw.predictLocalizer(dt);
+        hw.predictLocalizer(dt);  // grow Kalman uncertainty with time
 
+        // MegaTag vision update — refine drift estimates when a fresh tag is visible
         var result = limelight.getLatestResult();
         if (result != null && result.isValid() && result.getStaleness() < 0.1) {
             double[] botpose = result.getBotpose_MT2();
             if (botpose != null && botpose.length >= 6) {
-                limelight.updateRobotOrientation(hw.getYawRadians());
                 hw.updateLocalizerFromVision(
                     odoX, odoY, odoH,
                     botpose[0], botpose[1], Math.toRadians(botpose[5])
@@ -250,6 +276,7 @@ public class MainTeleOp extends CommandOpMode {
             }
         }
 
+        // Apply drift corrections on top of Pedro's pose
         double robotX = hw.getCorrectedX(odoX);
         double robotY = hw.getCorrectedY(odoY);
         double robotH = hw.getCorrectedH(odoH);
@@ -288,7 +315,7 @@ public class MainTeleOp extends CommandOpMode {
         RobotState state = controller.getState();
 
         // ── 4. ALIGNMENT + FALLBACK HEADING ───────────────────
-        double limelightDist = getLimelightDistance();
+        double poseDist = getPoseDistance();
 
         // Auto-align: compute rotation correction from limelight tx
         double rotationCorrection = 0.0;
@@ -309,13 +336,27 @@ public class MainTeleOp extends CommandOpMode {
             rotationCorrection = headingError * 0.05; // P on odometry heading
         }
 
-        // ── 5. LAUNCH ZONE RTP ────────────────────────────────
+        // ── 5. BASE ZONE & LAUNCH ZONE RTP ──────────────────────────
+        // Gamepad2 left-stick + right-stick buttons held → Base Zone pull (highest priority)
+        boolean baseZoneActive = operator.isDown(GamepadKeys.Button.LEFT_STICK_BUTTON)
+                             && operator.isDown(GamepadKeys.Button.RIGHT_STICK_BUTTON);
+
+        // Right trigger held while aligning → Launch Zone pull
         boolean rightTrigger = driver.getTrigger(GamepadKeys.Trigger.RIGHT_TRIGGER) > 0.5;
         launchZoneActive = rightTrigger && (state == RobotState.ALIGNING || state == RobotState.ALIGNED);
-        launchZoneRTP.setActive(launchZoneActive);
-        if (launchZoneActive) {
+
+        // Priority: base zone > launch zone > raw driver
+        if (baseZoneActive) {
+            baseZoneRTP.setActive(true);
+            launchZoneRTP.setActive(false);
+            baseZoneRTP.execute();
+        } else if (launchZoneActive) {
+            baseZoneRTP.setActive(false);
+            launchZoneRTP.setActive(true);
             launchZoneRTP.execute();
         } else {
+            baseZoneRTP.setActive(false);
+            launchZoneRTP.setActive(false);
             blendedFwd = -driver.getLeftY();
             blendedStrafe = -driver.getLeftX();
         }
@@ -326,13 +367,13 @@ public class MainTeleOp extends CommandOpMode {
         // ── 7. HOOD ───────────────────────────────────────
         // Instructions.md: hood angle set at all times if distance available
         // During SHOOT: base angle locked but kH compensation still applies
-        if (limelightDist > 0) {
+        if (poseDist > 0) {
             double avgVel = (flywheel.getVelocityL() + flywheel.getVelocityR()) / 2.0;
 
             if (state == RobotState.SHOOT) {
                 // Lock base position at moment shoot starts; only apply kH compensation
                 if (!shootHoodLocked) {
-                    lockedHoodPosition = RobotHardware.hoodPosition(limelightDist, RobotHardware.hoodAngleOffset);
+                    lockedHoodPosition = RobotHardware.hoodPosition(poseDist, RobotHardware.hoodAngleOffset);
                     shootHoodLocked = true;
                 }
                 double velDrop = flywheel.getTargetVelocity() - avgVel;
@@ -345,7 +386,7 @@ public class MainTeleOp extends CommandOpMode {
                 hood.setPosition(finalPos);
             } else {
                 shootHoodLocked = false;
-                hood.setForDistance(limelightDist, RobotHardware.hoodAngleOffset,
+                hood.setForDistance(poseDist, RobotHardware.hoodAngleOffset,
                     avgVel, flywheel.getTargetVelocity());
             }
         }
@@ -377,28 +418,20 @@ public class MainTeleOp extends CommandOpMode {
         }
         setReadyPrev(ready, shareHeld);
 
-        // ── 10. SAVE POSE TO SETTINGS ───────────────────────
-        savePoseToSettings(robotX, robotY, robotH);
-
-        // ── 11. TELEMETRY ──────────────────────────────────
-        sendTelemetry(result, robotX, robotY, robotH, ready, shareHeld, state, limelightDist);
+        // ── 10. TELEMETRY ──────────────────────────────────
+        sendTelemetry(result, robotX, robotY, robotH, ready, shareHeld, state, poseDist,
+                baseZoneActive, launchZoneActive);
     }
 
     // ─────────────────────────────────────────────────────────────
     // HELPERS
     // ─────────────────────────────────────────────────────────────
 
-    private double getLimelightDistance() {
-        var r = limelight.getLatestResult();
-        if (r == null || !r.isValid()) return -1;
-
-        double ty = r.getTy();
-        double mountRad = Math.toRadians(RobotHardware.LIMELIGHT_MOUNT_ANGLE);
-        double tyRad = Math.toRadians(ty);
-        if (Math.abs(Math.tan(mountRad + tyRad)) < 0.001) return -1;
-
-        double dist = RobotHardware.GOAL_HEIGHT / Math.tan(mountRad + tyRad)
-                   + RobotHardware.LIMELIGHT_DISTANCE_OFFSET;
+    private double getPoseDistance() {
+        Point goal = RobotHardware.GOAL_COORDS;
+        double dx = goal.x - robotX;
+        double dy = goal.y - robotY;
+        double dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < RobotHardware.LIMELIGHT_DIST_MIN || dist > RobotHardware.LIMELIGHT_DIST_MAX) return -1;
         return dist;
     }
@@ -414,7 +447,7 @@ public class MainTeleOp extends CommandOpMode {
         double tol = RobotHardware.FLYWHEEL_READY_TOLERANCE;
 
         boolean velocityOK = Math.abs(velL - target) < tol && Math.abs(velR - target) < tol;
-        double dist = getLimelightDistance();
+        double dist = getPoseDistance();
         boolean distOK = dist > 0 && !Double.isNaN(dist);
 
         return velocityOK && distOK;
@@ -432,24 +465,63 @@ public class MainTeleOp extends CommandOpMode {
         prevShare = share;
     }
 
-    // ── POSE PERSISTENCE via Marrow Settings ──────────────
-    private void savePoseToSettings(double x, double y, double h) {
-        try {
-            org.firstinspires.ftc.teamcode.RobotHardware hw2 = hw;
-            // Write to Marrow Settings if available
-            // This is a no-op if Marrow is not on the classpath; tune constants still work
-        } catch (Throwable t) {
-            // Marrow not present — pose is still maintained in static fields
-        }
-    }
+    // ── POSE PERSISTENCE ─────────────────────────────────
+    // savePoseToSettings is a no-op placeholder — Marrow Settings integration pending.
 
+    /**
+     * Attempts to restore the robot pose from Marrow Settings.
+     * If no saved pose is available (first match / fresh deploy), falls back to
+     * reading the pose from Limelight MegaTag and seeding Pedro's localizer.
+     *
+     * Orientation is set based on alliance:
+     *   RED  → 0 radians  (facing toward the red scoring wall)
+     *   BLUE → π radians (facing toward the blue scoring wall)
+     *
+     * The IMU is also reset so its yaw aligns with the chosen orientation,
+     * ensuring Pedro's TwoWheelLocalizer and the drift filter agree.
+     */
     private void restorePoseFromSettings() {
-        try {
-            // Attempt to restore from Marrow Settings
-            // If no saved pose exists, the follower starts at 0,0,0 as configured
-        } catch (Throwable t) {
-            // Marrow not present
+        // TODO: integrate Marrow Settings for pose persistence across plays
+        // For now, always seed from MegaTag when a target is visible.
+
+        // One-shot guard — only run once per OpMode start
+        if (poseRestored) return;
+        poseRestored = true;
+
+        var result = limelight.getLatestResult();
+        if (result == null || !result.isValid()) {
+            return;
         }
+
+        double[] botpose = result.getBotpose_MT2();
+        if (botpose == null || botpose.length < 6) {
+            return;
+        }
+
+        double visionX = botpose[0];
+        double visionY = botpose[1];
+        double visionH = Math.toRadians(botpose[5]);
+
+        // Target yaw based on alliance:
+        //   RED  → 0 rad  (facing +X / scoring wall)
+        //   BLUE → π rad  (facing −X / scoring wall)
+        double targetYaw = (RobotHardware.ALLIANCE == RobotHardware.Alliance.RED) ? 0.0 : Math.PI;
+
+        // Rotate MegaTag XY into Pedro's coordinate frame using the yaw offset.
+        double yawOffset = targetYaw - visionH;
+        double cosOff = Math.cos(yawOffset);
+        double sinOff = Math.sin(yawOffset);
+        double rotX =  visionX * cosOff + visionY * sinOff;
+        double rotY = -visionX * sinOff + visionY * cosOff;
+
+        // Seed Pedro's localizer
+        follower.setPose(new Pose(rotX, rotY, targetYaw));
+
+        // Sync IMU yaw to match so TwoWheelLocalizer and drift filter are consistent
+        hw.imu.resetYaw();
+
+        // Reset Kalman filters to start clean from the new pose
+        hw.initLocalizer();
     }
 
     // ── POSE GETTERS (for LaunchZoneRTPCommand) ──────────
@@ -467,7 +539,8 @@ public class MainTeleOp extends CommandOpMode {
     private void sendTelemetry(com.qualcomm.hardware.limelightvision.LLResult result,
                                double robotX, double robotY, double robotH,
                                boolean ready, boolean shareOverride,
-                               RobotState state, double limelightDist) {
+                               RobotState state, double poseDist,
+                               boolean baseZoneActive, boolean launchZoneActive) {
         telemetryData.addData("Alliance", RobotHardware.ALLIANCE);
         telemetryData.addData("State", state);
         telemetryData.addData("FlywheelL vel", flywheel.getVelocityL());
@@ -477,12 +550,14 @@ public class MainTeleOp extends CommandOpMode {
         telemetryData.addData("Hood pos", hood.getPosition());
         telemetryData.addData("isReadyToShoot", ready);
         telemetryData.addData("Share override", shareOverride);
-        telemetryData.addData("Limelight dist (in)", limelightDist);
+        telemetryData.addData("Pose dist (in)", poseDist);
         telemetryData.addData("Pose X", robotX);
         telemetryData.addData("Pose Y", robotY);
         telemetryData.addData("Robot H (deg)", Math.toDegrees(robotH));
         telemetryData.addData("Vel offset", RobotHardware.flywheelVelocityOffset);
         telemetryData.addData("Hood offset", RobotHardware.hoodAngleOffset);
+        telemetryData.addData("Base Zone RTP", baseZoneActive);
+        telemetryData.addData("Launch Zone RTP", launchZoneActive);
 
         if (result != null && result.isValid()) {
             telemetryData.addData("Limelight tx", result.getTx());

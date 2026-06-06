@@ -21,7 +21,6 @@ public class ShootCommand implements Command {
 
     private final com.qualcomm.robotcore.util.ElapsedTime timer =
         new com.qualcomm.robotcore.util.ElapsedTime();
-    private boolean gateOpened = false;
     private boolean started = false;
 
     public ShootCommand(FlywheelSubsystem flywheel, GateSubsystem gate,
@@ -38,7 +37,8 @@ public class ShootCommand implements Command {
             started = true;
             timer.reset();
             gate.open();
-            gateOpened = true;
+            intake.runForward();
+            return;
         }
 
         // Run intake to push note through

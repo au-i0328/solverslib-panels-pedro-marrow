@@ -76,18 +76,40 @@ BR  MotorEx(GoBILDA.RPM_435)  setZeroPowerBehavior(BRAKE)   setInverted(true)
 ### Flywheel Motors
 
 ```
-flywheelL  MotorEx(RUN_MODE = VelocityControl)
-flywheelR  MotorEx(RUN_MODE = VelocityControl)
+flywheelL  MotorEx(RUN_MODE = VelocityControl)  setFeedforwardCoefficients(kS=0.15, kV=12/maxVel)
+flywheelR  MotorEx(RUN_MODE = VelocityControl)  setFeedforwardCoefficients(kS=0.15, kV=12/maxVel)
 ```
 
-- `MotorEx` in `VelocityControl` mode uses its internal `veloController` + `feedforward`
-- Encoder always on via `DcMotorEx`
+- `MotorEx` in `VelocityControl` — per-cycle voltage loop with PIDF + torque clamping
+- Feedforward: `kV = 12 / maxVelocity` (set(1.0) = full speed), `kS = 0.15 V` (static friction)
+- Motor physics constants (GoBilda 435 RPM, 13.7:1 planetary):
+
+| Constant | Value | How derived |
+|---|---|---|
+| `FLYWHEEL_TPR` | 384.5 ticks/rev | encoder CPR |
+| `FLYWHEEL_OMEGA` | 45.55 rad/s | 435 RPM × 2π/60 |
+| `FLYWHEEL_R` | 1.30 Ω | 12 V / 9.2 A stall |
+| `FLYWHEEL_V_RES` | 0.326 V | 0.25 A × R (no-load current) |
+| `FLYWHEEL_K_EMF` | 0.256 V/(rad/s) | (12 − V_RES) / OMEGA |
 
 ### Intake Motor
 
 ```
-intake  Motor(RUN_MODE = RawPower)   // set(1.0) = full speed
+intake  Motor  (no encoder — raw power)
 ```
+
+- **No encoder** — velocity feedback is unavailable, so back-EMF is estimated from the *commanded* speed rather than measured
+- Pure feedforward voltage control: `vFF = K_EMF × ω_cmd + kS × sign(command)`
+- Battery-compensated and current-clamped, but no closed-loop PID
+- Motor physics constants (GoBilda 312 RPM, 19.2:1 planetary):
+
+| Constant | Value | How derived |
+|---|---|---|
+| `INTAKE_TPR` | 384.5 ticks/rev | encoder CPR |
+| `INTAKE_OMEGA` | 32.63 rad/s | 312 RPM × 2π/60 |
+| `INTAKE_R` | 1.30 Ω | 12 V / 9.2 A stall |
+| `INTAKE_V_RES` | 0.326 V | 0.25 A × R |
+| `INTAKE_K_EMF` | 0.357 V/(rad/s) | (12 − V_RES) / OMEGA |
 
 ### Hood Servos (ServoExGroup)
 
@@ -206,26 +228,32 @@ All four drive motors are **BRAKE** — when `power = 0` they resist motion rath
 
 **File:** `subsystems/FlywheelSubsystem.java`
 
-Two motors in `VelocityControl` mode, updated every loop with a **manual PIDF + feedforward** loop.
+Two motors in `VelocityControl` mode, updated every loop with a **manual PIDF + back-EMF compensation + torque limiting** loop. All motor physics constants live in `RobotHardware`.
 
-### Velocity Loop (per motor)
+### Voltage Loop (per motor, per cycle)
 
 ```
-error = targetVelocity − measuredVelocity
+ω_measured = motor.getVelocity() / TPR × 2π          (rad/s)
+vBackEmf   = K_EMF × ω_measured                      (opposes applied voltage)
 
-integral += error × dt   (anti-windup: clamp to ±12 V)
+PID corrective voltage:
+  err        = targetVelocity − measuredVelocity       (ticks/s)
+  integral   = clamp(integral + err·dt, −12, 12)     (anti-windup)
+  derivative = (err − prevErr) / dt
+  vPID      = kP·err + kI·integral + kD·derivative + kF·targetVelocity
 
-derivative = (error − prevError) / dt
+vTarget = vPID + vBackEmf                            (back-EMF compensation)
 
-voltage_PIDF = kP×error + kI×integral + kD×derivative + kF×targetVelocity
+Torque limiting — always active (flywheels are load-bearing):
+  iTarget  = FLYWHEEL_MAX_CURRENT                    (3 A — tunable)
+  vMin     = vBackEmf − iTarget × R_MOTOR
+  vMax     = vBackEmf + iTarget × R_MOTOR
+  vClamped = clamp(vTarget, vMin, vMax)
 
-feedforward  = kS×sign(targetVelocity) + kV×targetVelocity
-            // kS ≈ 0.15 V (static friction)
-            // kV = 12 V / FLYWHEEL_TARGET_VELOCITY
-
-totalVoltage = voltage_PIDF + feedforward
-motorPower   = totalVoltage / batteryVoltage
+power = vClamped / batteryVoltage
 ```
+
+> Back-EMF compensation means `vPID` is a correction around the motor's actual operating point rather than around zero, so the PID responds correctly at all speeds.
 
 ### Tunable Constants
 
@@ -235,10 +263,11 @@ motorPower   = totalVoltage / batteryVoltage
 | `FLYWHEEL_READY_TOLERANCE` | 150 ticks/s | `isReadyToShoot` velocity threshold |
 | `FLYWHEEL_L_KP/KI/KD/KF` | 0.0001 / 0.001 / 0 / 0 | left motor PID |
 | `FLYWHEEL_R_KP/KI/KD/KF` | 0.0001 / 0.001 / 0 / 0 | right motor PID |
+| `FLYWHEEL_MAX_CURRENT` | 3.0 A | torque clamp — protects motors under load |
 | `flywheelVelocityOffset` | 0 (live) | gamepad2 dpad up/down delta ±50 |
 
 - Left and right have separate PID gains to handle slight mechanical differences
-- `addOffset(delta)` adjusts `targetVelocity` live; `reset()` zeroes the integral and derivative history
+- `addOffset(delta)` adjusts `targetVelocity` live; `reset()` zeroes integral and derivative history
 
 ---
 
@@ -294,15 +323,42 @@ During `SHOOT` state the base position is **locked** at the moment the shot star
 
 **File:** `subsystems/IntakeSubsystem.java`
 
-Simple `Motor` (raw power). Three commands:
+`Motor` (no encoder). The intake drives at ±100% of `INTAKE_MAX_VELOCITY`. Because no encoder is present, back-EMF is estimated from the **commanded** speed (pure feedforward) rather than measured. No closed-loop PID is used.
 
-| Method | Power |
+### Voltage Loop (per cycle — pure feedforward, no velocity feedback)
+
+```
+ω_command = command × INTAKE_MAX_VELOCITY / INTAKE_TPR × 2π    (rad/s)
+vFF       = INTAKE_K_EMF × ω_command                            (velocity feedforward)
+vS        = 0.15 × sign(command)                               (static friction kS)
+vBackEmf  = vFF + vS                                            (estimated opposing EMF)
+
+iTarget = |command| < 0.01 → 0  (coast when stopped)
+          otherwise → INTAKE_MAX_CURRENT               (4 A — protects motor on jam)
+
+vMin     = vBackEmf − iTarget × INTAKE_R
+vMax     = vBackEmf + iTarget × INTAKE_R
+vClamped = clamp(command × 12 V, vMin, vMax)
+power    = vClamped / batteryVoltage
+```
+
+When stopped (`|command| < 0.01`) the motor coasts — no current is applied and no resistance is generated. When running, current is clamped to `INTAKE_MAX_CURRENT` (4 A) so the motor is protected if a note jams the intake.
+
+### Commands
+
+| Method | Effect |
 |---|---|
-| `runForward()` | `1.0` |
-| `runReverse()` | `−1.0` |
-| `stop()` | `0` (via `stopMotor()`) |
+| `runForward()` | Drive at +100% of `INTAKE_MAX_VELOCITY` |
+| `runReverse()` | Drive at −100% of `INTAKE_MAX_VELOCITY` |
+| `stop()` | Cut power immediately (via `stopMotor()`) |
+| `isRunning()` | `true` if `\|motor.get()\| > 0.01` |
 
-`isRunning()` returns `true` if `|motor.get()| > 0.01`.
+### Tunable Constants
+
+| Constant | Default | Meaning |
+|---|---|---|
+| `INTAKE_MAX_CURRENT` | 4.0 A | current clamp — protects motor under jam |
+| `INTAKE_MAX_VELOCITY` | ~2005 ticks/s | derived: TPR × RPM / 60 |
 
 ---
 
@@ -392,34 +448,56 @@ execute() called every loop while shooting:
 
 **Active when:** gamepad1 right trigger held AND state = `ALIGNING` or `ALIGNED`.
 
+### Launch Zones
+
+Two Marrow `PolygonZone` instances define the pull regions:
+
+```
+CLOSE_ZONE vertices:  (144, 144) — (72, 72) — (0, 144)
+FAR_ZONE  vertices:    (48, 0)   — (72, 24)  — (96, 0)
+```
+
+`CLOSE_ZONE` is the large right-triangle in the scoring-corner area; `FAR_ZONE` is the smaller triangle near the field center. Both zones use the Marrow `Zones` API from `com.skeletonarmyftc.marrow`.
+
 ### Algorithm
 
-1. Find the launch zone edge: `launchX = goalX − 2.0 in` (2 inches inboard from scoring wall)
-2. If robot `X > launchX` (outside zone):
-   - Compute unit vector from robot to nearest point on launch line
-   - Rotate driver's joystick into world frame using `robotH`
-   - Blend: `blended = toZone_vector × (1 − WEIGHT) + driverWorld_vector × WEIGHT`
-   - `VECTOR_WEIGHT_DRIVER = 0.6` — driver retains 60% authority
-   - Clamp magnitude to 1.0
-3. If robot `X ≤ launchX` (inside zone) or not active: pass through raw driver input
+1. **Zone selection:** compute `CLOSE_ZONE.distanceTo(robot)` and `FAR_ZONE.distanceTo(robot)`; pick the nearer zone
+2. **Closest-point-on-polygon:** iterate every edge of the selected zone; for each edge find the closest point on that edge to the robot; return the minimum across all edges
+3. **Pull vector:** compute the unit vector from robot → closest boundary point
+4. **World-frame driver input:** rotate joystick by `robotH`
+5. **Blend:** `blended = pull × (1 − WEIGHT) + driverWorld × WEIGHT`; `VECTOR_WEIGHT_DRIVER = 0.6`
+6. **Normalize** to unit magnitude
+7. If robot is **not active** (trigger released or wrong state): pass raw driver input through unchanged
 
-The blended forward/strafe is written back to `MainTeleOp.blendedFwd / blendedStrafe` and fed into `drive.driveFieldCentric()`.
+The blended forward/strafe is written to `MainTeleOp.blendedFwd / blendedStrafe` and fed into `drive.driveFieldCentric()`.
+
+### Tuning
+
+| Constant | Default | Effect |
+|---|---|---|
+| `VECTOR_WEIGHT_DRIVER` | 0.6 | Driver authority — see §10 table in `tuning.md` |
 
 ---
 
-## 11. Limelight Integration
+## 11. Distance Measurement (Pose-Based)
 
-### Distance Measurement
+### How Distance Is Computed
 
 ```
-ty = Limelight TY (degrees below horizon)
-mountAngle = 25° from horizontal
-GOAL_HEIGHT = 18 inches (centre of goal above floor)
-
-distance = GOAL_HEIGHT / tan(mountAngle + ty) + LIMELIGHT_DISTANCE_OFFSET
+dx = GOAL_COORDS.x − robotX
+dy = GOAL_COORDS.y − robotY
+distance = √(dx² + dy²)
 ```
+
+`robotX / robotY / robotH` are the filtered Kalman pose (Pedro `Follower.getPose()` after fusing odometry + MegaTag 2 vision). `GOAL_COORDS` is switched per-alliance in `init_loop()` from `RED_GOAL_COORDS` / `BLUE_GOAL_COORDS` in `RobotHardware`.
 
 Rejected if `distance < LIMELIGHT_DIST_MIN (5 in)` or `> LIMELIGHT_DIST_MAX (120 in)`.
+
+### Uses
+
+- **Hood aiming** — `hoodPosition(distance)` → interpolates from `HOOD_DISTANCE_SAMPLES` → `HOOD_POSITION_SAMPLES` lookup table
+- **`isReadyToShoot`** — requires a valid pose distance to allow shooting
+- **Telemetry** — displayed as `Pose dist (in)` in Panels
 
 ### Crosshair Servoing (Auto-Align)
 
@@ -583,14 +661,43 @@ Autonomous uses **Pedro Pathing** for all drive movement — the `Follower` clas
 
 ### Pedro Pathing Setup
 
-```java
-follower = Constants.createFollower(hardwareMap)
-hw.initLocalizer()      // Kalman filters
-hw.clearBulkCache()
+Pedro Pathing uses a **Two-Wheel Localizer** (forward pod + lateral pod + IMU) and a **Mecanum drivetrain**, both fully configured in `Constants.java`. All values are Panels-tunable via `Configurable` annotations.
 
-// Paths built and followed via PathBuilder / PathChain
-// follower.followPath() called during run()
 ```
+Constants.createFollower(hardwareMap)
+  └─ TwoWheelLocalizer    ← forward pod (FL motor) + lateral pod (BR motor) + IMU
+  └─ MecanumDrivetrain    ← FL / BL / FR / BR motors
+  └─ FollowerConstants    ← mass, PIDF, velocity, ZPA, centripetal
+  └─ PathConstraints      ← maxVel, maxAccel, maxJerk, maxAngVel
+```
+
+**Per-OpMode initialization:**
+```java
+// In init() or init_loop()
+follower = Constants.createFollower(hardwareMap);
+hw.initLocalizer();   // Kalman drift filters (x/y/h)
+hw.clearBulkCache();
+
+// In start()
+follower.setStartingPose(new Pose(startX, startY, startH));
+
+// In loop()
+follower.update();     // every loop — updates pose from odometry + IMU
+```
+
+**Tuning order:**
+1. Forward Tuner → `FORWARD_TICKS_TO_INCHES`
+2. Lateral Tuner → `STRAFE_TICKS_TO_INCHES`
+3. Offsets Tuner → `FORWARD_POD_Y`, `STRAFE_POD_X`
+4. Forward Velocity Tuner → `X_VELOCITY`
+5. Lateral Velocity Tuner → `Y_VELOCITY`
+6. Forward / Lateral ZPA Tuners → `FORWARD_ZPA`, `LATERAL_ZPA`
+7. Heading Tuner → `HEADING_P / I / D / F`
+8. Translational Tuner → `TRANSLATIONAL_P / I / D / F`
+9. Drive Tuner → `DRIVE_P / I / D / F / T` + `BRAKING_STRENGTH`
+10. Centripetal Tuner → `CENTRIPETAL_SCALING`
+
+**IMU orientation** — set `IMU_LOGO_FACING` and `IMU_USB_FACING` in `Constants.java` to match physical Control Hub mounting (default: UP + LEFT).
 
 ### Limelight in Auto
 
@@ -604,15 +711,49 @@ MegaTag 2 (Limelight pose estimation) runs continuously during auto, updating th
 |---|---|---|
 | `FLYWHEEL_TARGET_VELOCITY` | 2800 ticks/s | `RobotHardware` |
 | `FLYWHEEL_READY_TOLERANCE` | 150 ticks/s | `RobotHardware` |
+| `FLYWHEEL_MAX_CURRENT` | 3.0 A | `RobotHardware` |
+| `FLYWHEEL_TPR / RPM` | 384.5 / 435 | `RobotHardware` |
+| `FLYWHEEL_K_EMF` | 0.256 V/(rad/s) | `RobotHardware` |
+| `FLYWHEEL_R` | 1.30 Ω | `RobotHardware` |
+| `FLYWHEEL_L_KP/KI/KD/KF` | 0.0001 / 0.001 / 0 / 0 | `RobotHardware` |
+| `FLYWHEEL_R_KP/KI/KD/KF` | 0.0001 / 0.001 / 0 / 0 | `RobotHardware` |
+| `INTAKE_MAX_CURRENT` | 4.0 A | `RobotHardware` |
+| `INTAKE_MAX_VELOCITY` | ~2005 ticks/s | `RobotHardware` |
+| `INTAKE_TPR / RPM` | 384.5 / 312 | `RobotHardware` |
+| `INTAKE_K_EMF` | 0.357 V/(rad/s) | `RobotHardware` |
+| `INTAKE_R` | 1.30 Ω | `RobotHardware` |
 | `SHOOT_DELAY` | 2.5 s | `RobotHardware` |
 | `GATE_OPEN_POSITION` | 0.55 | `RobotHardware` |
 | `GATE_CLOSE_POSITION` | 0.0 | `RobotHardware` |
 | `HOOD_MIN/MAX_POSITION` | 0.05 / 0.80 | `RobotHardware` |
 | `HOOD_COMPENSATION_COEFFICIENT` | 0.0005 | `RobotHardware` |
-| `DRIVE_MAX_CURRENT` | 3.0 A (tunable) | `DriveSubsystem` |
-| `DRIVE_STALL_CHECK_INTERVAL` | 10 loops (tunable) | `DriveSubsystem` |
+| `DRIVE_MAX_CURRENT` | 3.0 A | `DriveSubsystem` |
+| `DRIVE_STALL_CHECK_INTERVAL` | 10 loops | `DriveSubsystem` |
 | `ALIGNMENT_DELAY` | 0.15 s | `RobotHardware` |
 | `VECTOR_WEIGHT_DRIVER` | 0.6 | `RobotHardware` |
 | `LIMELIGHT_MOUNT_ANGLE` | 25° | `RobotHardware` |
-| `GOAL_HEIGHT` | 18 in | `RobotHardware` |
-| `RED/BLUE_GOAL_COORDS` | (144,72) / (0,72) | `RobotHardware` |
+| `RED_GOAL_COORDS` | (144, 144) — red alliance target | `RobotHardware` |
+| `BLUE_GOAL_COORDS` | (0, 144) — blue alliance target | `RobotHardware` |
+| `CLOSE_LAUNCH_ZONE` | PolygonZone (142,144)–(72,74)–(2,144) | `RobotHardware` |
+| `FAR_LAUNCH_ZONE` | PolygonZone (50,0)–(72,22)–(94,0) | `RobotHardware` |
+
+### Pedro Pathing Constants (`Constants.java`)
+
+| Constant | Default | Tuned by |
+|---|---|---|
+| `FORWARD_TICKS_TO_INCHES` | 1.0 | Forward Tuner |
+| `STRAFE_TICKS_TO_INCHES` | 1.0 | Lateral Tuner |
+| `FORWARD_POD_Y` | 0.0 in | Offsets Tuner |
+| `STRAFE_POD_X` | 0.0 in | Offsets Tuner |
+| `X_VELOCITY` | 1.0 in/s | Forward Velocity Tuner |
+| `Y_VELOCITY` | 1.0 in/s | Lateral Velocity Tuner |
+| `FORWARD_ZPA` | 50.0 in/s² | Forward ZPA Tuner |
+| `LATERAL_ZPA` | 50.0 in/s² | Lateral ZPA Tuner |
+| `CENTRIPETAL_SCALING` | 0.005 | Centripetal Tuner |
+| `HEADING_P/I/D/F` | 3.0/0.0/0.1/0.0 | Heading Tuner |
+| `TRANSLATIONAL_P/I/D/F` | 1.5/0.0/0.05/0.0 | Translational Tuner |
+| `DRIVE_P/I/D/F/T` | 0.1/0.0/0.01/0.0/0.6 | Drive Tuner |
+| `BRAKING_STRENGTH` | 0.5 | Drive Tuner |
+| `ROBOT_MASS_KG` | 5.0 kg | Measured |
+| `PATH_MAX_VELOCITY` | 40.0 in/s | Field tuning |
+| `PATH_MAX_ACCELERATION` | 60.0 in/s² | Field tuning |

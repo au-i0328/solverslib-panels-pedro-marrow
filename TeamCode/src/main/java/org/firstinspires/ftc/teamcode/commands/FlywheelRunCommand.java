@@ -13,7 +13,7 @@ import org.firstinspires.ftc.teamcode.subsystems.HoodSubsystem;
 public class FlywheelRunCommand implements Command {
     private final FlywheelSubsystem flywheel;
     private final HoodSubsystem hood;
-    private final double limelightDistance; // inches, from Limelight
+    private double limelightDistance; // inches, from Limelight — mutable so it can be updated
 
     public FlywheelRunCommand(FlywheelSubsystem flywheel, HoodSubsystem hood,
                               double limelightDistance) {
@@ -22,9 +22,17 @@ public class FlywheelRunCommand implements Command {
         this.limelightDistance = limelightDistance;
     }
 
+    /**
+     * Update the live distance before the next execute() call.
+     * Call this every loop after reading fresh Limelight data.
+     */
+    public void setDistance(double distance) {
+        this.limelightDistance = distance;
+    }
+
     @Override
     public void execute() {
-        flywheel.update();
+        flywheel.update(0.015);  // assume ~15 ms loop — pass real dt from OpMode when possible
 
         if (limelightDistance > 0) {
             hood.setForDistance(

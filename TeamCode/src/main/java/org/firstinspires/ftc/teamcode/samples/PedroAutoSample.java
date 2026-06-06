@@ -107,7 +107,8 @@ public class PedroAutoSample extends CommandOpMode {
         super.reset();
 
 
-        // Initialize follower
+        // Rebuild constants so every OpMode restart picks up the latest Panels-tuned values
+        Constants.rebuild();
         follower = Constants.createFollower(hardwareMap);
         follower.setStartingPose(startPose);
         buildPaths();

@@ -1,24 +1,24 @@
 package org.firstinspires.ftc.teamcode.commands;
 
 import com.seattlesolvers.solverslib.command.Command;
+import com.skeletonarmyftc.marrow.spatial.zone.PolygonZone;
+import com.skeletonarmyftc.marrow.spatial.zone.Point;
 
 import org.firstinspires.ftc.teamcode.RobotHardware;
 
 /**
- * Launch Zone RTP command per instructions.md:
+ * Launch Zone RTP — pull-to-polygon-zone command.
  *
- * - Get robot pose from odometry + vision
- * - If right trigger held and robot is outside the launch zone,
- *   drive toward the closest calculated launch zone location
- * - Draw a line 5 cm (≈2 inches) inboard from the scoring wall
- * - Vector addition: launch-zone velocity vector + driver's joystick vector,
- *   with VECTOR_WEIGHT_DRIVER controlling driver override strength
+ * - Reads robot pose from odometry + vision
+ * - Computes distance to two polygon launch zones (close & far)
+ * - Picks the nearer zone
+ * - Computes the closest point on that zone's boundary
+ * - Blends a pull vector toward that point with the driver's joystick
+ * - VECTOR_WEIGHT_DRIVER controls driver override strength
  *
- * Non-blocking — computed every loop so the drive loop can apply the blended result.
+ * Non-blocking — computed every loop.
  */
 public class LaunchZoneRTPCommand implements Command {
-    /** 5 cm ≈ 2 inches */
-    private static final double LAUNCH_ZONE_OFFSET_IN = 2.0;
 
     private final java.util.function.Supplier<Double> getRobotX;
     private final java.util.function.Supplier<Double> getRobotY;
@@ -56,43 +56,39 @@ public class LaunchZoneRTPCommand implements Command {
         double robotY = getRobotY.get();
         double robotH = getRobotH.get();
 
-        // Scoring wall X coordinate for this alliance
-        double goalX = RobotHardware.ALLIANCE == RobotHardware.Alliance.RED
-                ? RobotHardware.RED_GOAL_COORDS.x
-                : RobotHardware.BLUE_GOAL_COORDS.x;
+        if (active) {
+            // Pick the nearer zone
+            PolygonZone nearest = nearestZone(robotX, robotY);
 
-        // Launch zone edge: 5 cm inboard from scoring wall
-        double launchX = goalX - LAUNCH_ZONE_OFFSET_IN;
+            // Closest point on the nearest zone's boundary
+            double[] closest = closestPointOnPolygon(robotX, robotY, nearest);
 
-        // Distance from launch zone line (positive = outside, negative = inside)
-        double distFromZone = robotX - launchX;
-
-        if (active && distFromZone > 0) {
-            // Robot is outside launch zone — compute pull vector toward it
-            // Nearest point on launch zone line to robot's current Y
-            double targetX = launchX;
-            double targetY = robotY;
-
-            // Unit vector from robot to launch zone point
-            double dx = targetX - robotX;
-            double dy = targetY - robotY;
+            // Pull unit vector toward that closest point
+            double dx = closest[0] - robotX;
+            double dy = closest[1] - robotY;
             double dist = Math.sqrt(dx * dx + dy * dy);
-            double toZoneX = (dist < 0.001) ? 0 : dx / dist;
-            double toZoneY = (dist < 0.001) ? 0 : dy / dist;
 
-            // Driver input in world frame
-            double driverFwd = getDriverFwd.get();
+            double toZoneX, toZoneY;
+            if (dist < 0.001) {
+                toZoneX = 0.0;
+                toZoneY = 0.0;
+            } else {
+                toZoneX = dx / dist;
+                toZoneY = dy / dist;
+            }
+
+            // Driver input in world frame (robotH → field orientation)
+            double driverFwd    = getDriverFwd.get();
             double driverStrafe = getDriverStrafe.get();
-            double driverWorldX = driverFwd * Math.cos(robotH) - driverStrafe * Math.sin(robotH);
-            double driverWorldY = driverFwd * Math.sin(robotH) + driverStrafe * Math.cos(robotH);
+            double driverWorldX =  driverFwd * Math.cos(robotH) - driverStrafe * Math.sin(robotH);
+            double driverWorldY =  driverFwd * Math.sin(robotH) + driverStrafe * Math.cos(robotH);
 
-            // Blend: launch zone pull + driver joystick
-            // VECTOR_WEIGHT_DRIVER = 0.6 means driver can override 60% of the pull
-            double w = RobotHardware.VECTOR_WEIGHT_DRIVER;
+            // Blend pull vector + driver joystick
+            double w = RobotHardware.VECTOR_WEIGHT_DRIVER; // 0.6 default
             double blendedX = toZoneX * (1.0 - w) + driverWorldX * w;
             double blendedY = toZoneY * (1.0 - w) + driverWorldY * w;
 
-            // Clamp magnitude to [-1, 1]
+            // Clamp to unit magnitude so the drive controller never gets > 1
             double mag = Math.sqrt(blendedX * blendedX + blendedY * blendedY);
             if (mag > 1.0) {
                 blendedX /= mag;
@@ -102,10 +98,74 @@ public class LaunchZoneRTPCommand implements Command {
             setBlendedFwd.accept(blendedX);
             setBlendedStrafe.accept(blendedY);
         } else {
-            // Inside zone or not active — pass through raw driver input
+            // Not active — pass raw driver input through unchanged
             setBlendedFwd.accept(getDriverFwd.get());
             setBlendedStrafe.accept(getDriverStrafe.get());
         }
+    }
+
+    /**
+     * Returns whichever zone is closer to (x, y).
+     */
+    private PolygonZone nearestZone(double x, double y) {
+        double dClose = RobotHardware.CLOSE_LAUNCH_ZONE.distanceTo(x, y);
+        double dFar   = RobotHardware.FAR_LAUNCH_ZONE.distanceTo(x, y);
+        return (dClose <= dFar) ? RobotHardware.CLOSE_LAUNCH_ZONE : RobotHardware.FAR_LAUNCH_ZONE;
+    }
+
+    /**
+     * Returns {closestX, closestY} on the polygon boundary nearest to (px, py).
+     */
+    private double[] closestPointOnPolygon(double px, double py, PolygonZone zone) {
+        Point[] verts = zone.getVertices();
+        int n = verts.length;
+
+        double bestDist = Double.MAX_VALUE;
+        double bestX = px, bestY = py;
+
+        for (int i = 0; i < n; i++) {
+            Point a = verts[i];
+            Point b = verts[(i + 1) % n]; // next vertex (wraps around)
+
+            double[] cp = closestPointOnSegment(px, py, a.x, a.y, b.x, b.y);
+            double d = hypot(px - cp[0], py - cp[1]);
+
+            if (d < bestDist) {
+                bestDist = d;
+                bestX = cp[0];
+                bestY = cp[1];
+            }
+        }
+        return new double[]{ bestX, bestY };
+    }
+
+    /**
+     * Returns {cx, cy} — the point on segment AB nearest to P.
+     * A = (ax, ay), B = (bx, by), P = (px, py).
+     */
+    private double[] closestPointOnSegment(
+            double px, double py,
+            double ax, double ay,
+            double bx, double by) {
+
+        double bxax = bx - ax;
+        double byay = by - ay;
+        double segLenSq = bxax * bxax + byay * byay;
+
+        if (segLenSq < 1e-12) {
+            // Degenerate — A and B are the same point
+            return new double[]{ ax, ay };
+        }
+
+        // Projection parameter t ∈ [0, 1]
+        double t = ((px - ax) * bxax + (py - ay) * byay) / segLenSq;
+        t = Math.max(0.0, Math.min(1.0, t));
+
+        return new double[]{ ax + t * bxax, ay + t * byay };
+    }
+
+    private double hypot(double dx, double dy) {
+        return Math.sqrt(dx * dx + dy * dy);
     }
 
     @Override
@@ -115,7 +175,6 @@ public class LaunchZoneRTPCommand implements Command {
 
     @Override
     public void end() {
-        // Restore raw driver input on end
         setBlendedFwd.accept(getDriverFwd.get());
         setBlendedStrafe.accept(getDriverStrafe.get());
     }

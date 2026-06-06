@@ -15,6 +15,7 @@ public class PedroTeleOpSample extends CommandOpMode {
 
     @Override
     public void initialize() {
+        Constants.rebuild();
         follower = Constants.createFollower(hardwareMap);
         super.reset();
 

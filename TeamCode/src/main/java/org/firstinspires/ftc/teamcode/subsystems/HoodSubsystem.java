@@ -37,8 +37,8 @@ public class HoodSubsystem extends com.seattlesolvers.solverslib.command.Subsyst
 
     /**
      * Set hood for a given distance to the goal, with live offset and velocity compensation.
-     * @param distance       metres to the goal
-     * @param offset         manual tuning offset (dpad)
+     * @param distance       inches to the goal (from Limelight)
+     * @param offset         manual tuning offset (gamepad2 dpad)
      * @param actualVelocity current flywheel velocity (ticks/sec)
      * @param targetVelocity flywheel target velocity (ticks/sec)
      */
