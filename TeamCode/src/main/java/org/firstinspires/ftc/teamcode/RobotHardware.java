@@ -8,13 +8,15 @@ import com.pedropathing.geometry.Point;
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
 import com.qualcomm.robotcore.hardware.DcMotor;
-import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.HardwareMap;
+import com.seattlesolvers.solverslib.hardware.servos.ServoEx;
+import com.seattlesolvers.solverslib.hardware.MotorEx;
+import com.seattlesolvers.solverslib.hardware.Motor;
 import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorEx.CurrentUnit;
-import com.qualcomm.robotcore.util.Range;
 import com.qualcomm.robotcore.external.navigation.AngleUnit;
 import com.qualcomm.robotcore.external.navigation.YawPitchRollAngles;
 
@@ -188,10 +190,11 @@ public class RobotHardware {
     // ACTUAL HARDWARE — do not tune via Panels
     // ─────────────────────────────────────────────────────────────
 
-    public DcMotorEx fl, fr, bl, br;
-    public DcMotorEx flywheelL, flywheelR;
-    public DcMotorEx intake;
-    public Servo hoodL, hoodR, gate;
+    public MotorEx fl, fr, bl, br;
+    public MotorEx flywheelL, flywheelR;
+    public Motor intake;
+    public ServoEx hoodL, hoodR;
+    public ServoEx gate;
     public IMU imu;
     public LynxModule controlHub;
     public VoltageSensor voltageSensor;
@@ -212,35 +215,37 @@ public class RobotHardware {
 
     public void init(@NonNull HardwareMap hwMap) {
         // Drive motors
-        fl = hwMap.get(DcMotorEx.class, "FL");
-        fr = hwMap.get(DcMotorEx.class, "FR");
-        bl = hwMap.get(DcMotorEx.class, "BL");
-        br = hwMap.get(DcMotorEx.class, "BR");
+        fl = new MotorEx(hwMap, "FL");
+        fr = new MotorEx(hwMap, "FR");
+        bl = new MotorEx(hwMap, "BL");
+        br = new MotorEx(hwMap, "BR");
 
-        fr.setDirection(DcMotor.Direction.REVERSE);
-        br.setDirection(DcMotor.Direction.REVERSE);
+        fr.setInverted(true);
+        br.setInverted(true);
 
         // Drivetrain motors: coast when power = 0 (so auto-align doesn't fight brake)
-        fl.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
-        fr.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
-        bl.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
-        br.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+        fl.setZeroPowerBehavior(Motor.ZeroPowerBehavior.FLOAT);
+        fr.setZeroPowerBehavior(Motor.ZeroPowerBehavior.FLOAT);
+        bl.setZeroPowerBehavior(Motor.ZeroPowerBehavior.FLOAT);
+        br.setZeroPowerBehavior(Motor.ZeroPowerBehavior.FLOAT);
 
-        // Flywheel motors with encoders
-        flywheelL = hwMap.get(DcMotorEx.class, "flywheelL");
-        flywheelR = hwMap.get(DcMotorEx.class, "flywheelR");
-        flywheelL.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
-        flywheelR.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+        // Flywheel motors — MotorEx wraps DcMotorEx, encoder always on
+        flywheelL = new MotorEx(hwMap, "flywheelL");
+        flywheelR = new MotorEx(hwMap, "flywheelR");
+        flywheelL.setRunMode(Motor.RunMode.VelocityControl);
+        flywheelR.setRunMode(Motor.RunMode.VelocityControl);
 
         // Intake motor
-        intake = hwMap.get(DcMotorEx.class, "intake");
+        intake = new Motor(hwMap, "intake");
 
-        // Servos
-        hoodL  = hwMap.get(Servo.class, "hoodL");
-        hoodR  = hwMap.get(Servo.class, "hoodR");
-        gate   = hwMap.get(Servo.class, "gate");
-
-        // Gate starts closed
+        // Servos — hood uses ServoEx with power caching
+        // setRange(0, 1) keeps the 0–1 position semantics; hardstops enforced by
+        // HoodSubsystem via clamp() so the effective range matches HOOD_MIN/MAX_POSITION
+        hoodL = new ServoEx(hwMap, "hoodL");
+        hoodR = new ServoEx(hwMap, "hoodR");
+        hoodL.setRange(0, 1);
+        hoodR.setRange(0, 1);
+        gate   = new ServoEx(hwMap, "gate");
         gate.setPosition(GATE_CLOSE_POSITION);
 
         // IMU — UP + LEFT orientation for Control Hub internal IMU
@@ -288,88 +293,9 @@ public class RobotHardware {
         return imu.getRobotYawPitchRollAngles().getYaw(AngleUnit.RADIANS);
     }
 
-    /**
-     * Converts a target voltage to a motor power fraction, accounting for battery sag.
-     * This is the foundation of torque-current control — always use this instead of
-     * raw setPower().
-     */
-    public double voltageToPower(double targetVolts) {
-        return Range.clip(targetVolts / batteryVoltage(), -1.0, 1.0);
-    }
-
     // ─────────────────────────────────────────────────────────────
-    // TORQUE-CURRENT CONTROL (drivetrain)
+    // INPUT SHAPING
     // ─────────────────────────────────────────────────────────────
-
-    // GoBilda 435 RPM (5202 Series) — 13.7:1 planetary, 384.5 PPR encoder, 9.2A stall
-    private static final double DRIVE_TPR          = 384.5;       // ticks/rev (encoder PPR)
-    private static final double DRIVE_GEAR_RATIO  = 13.7;        // internal planetary gear ratio
-    private static final double DRIVE_I_STALL      = 9.2;         // amps
-    private static final double DRIVE_R_MOTOR     = 12.0 / DRIVE_I_STALL;  // ohms ≈ 1.30
-    // No-load: 435 RPM @ 12V, 0.25A
-    // back-EMF at no-load = 12 - 0.25 * R = 11.674V
-    // omega_no_load = 435 * 2π/60 = 45.55 rad/s
-    private static final double DRIVE_OMEGA_NOLOAD = 435.0 * 2.0 * Math.PI / 60.0; // rad/s
-    private static final double DRIVE_V_RESISTOR    = 0.25 * DRIVE_R_MOTOR;           // 0.326V
-    private static final double DRIVE_KEMF         = (12.0 - DRIVE_V_RESISTOR) / DRIVE_OMEGA_NOLOAD; // V/(rad/s) ≈ 0.256
-    // Stall torque = 18.7 kg·cm = 1.834 N·m; KTORQUE = 1.834 / 9.2 = 0.199 N·m/A
-    private static final double DRIVE_KTORQUE      = (18.7 * 0.01 * 9.81) / DRIVE_I_STALL; // N·m/A ≈ 0.199
-    public static final double DRIVE_MAX_CURRENT = 3.0; // amps per motor (tuned limit)
-
-    /**
-     * Apply torque-current control to all four drive motors.
-     * @param forward   normalized forward stick (-1 to 1)
-     * @param strafe    normalized strafe stick (-1 to 1)
-     * @param rotation  normalized rotation stick (-1 to 1)
-     */
-    public void setDrivePower(double forward, double strafe, double rotation) {
-        double[] raw = mecanumPowers(forward, strafe, rotation);
-        double batt = batteryVoltage();
-
-        DcMotorEx[] motors = { fl, fr, bl, br };
-        for (int i = 0; i < 4; i++) {
-            double vRaw = raw[i] * 12.0;
-            double omega = motors[i].getVelocity() / DRIVE_TPR * 2.0 * Math.PI;
-            double vBackEmf = DRIVE_KEMF * omega;
-
-            double iTarget = Math.abs(raw[i]) < 0.01 ? 0.0 : DRIVE_MAX_CURRENT;
-            double vMin = vBackEmf - iTarget * DRIVE_R_MOTOR;
-            double vMax = vBackEmf + iTarget * DRIVE_R_MOTOR;
-            double vCmd = Range.clip(vRaw, Math.min(vMin, vMax), Math.max(vMin, vMax));
-            motors[i].setPower(Range.clip(vCmd / batt, -1.0, 1.0));
-        }
-    }
-
-    /**
-     * mecanum drive inverse kinematics.
-     * Returns raw motor powers before current limiting.
-     */
-    public static double[] mecanumPowers(double fwd, double strafe, double rot) {
-        double mag = Math.abs(fwd) + Math.abs(strafe) + Math.abs(rot);
-        if (mag < 0.01) return new double[]{ 0, 0, 0, 0 };
-
-        double norm = mag > 1.0 ? mag : 1.0;
-        fwd    /= norm;
-        strafe /= norm;
-        rot    /= norm;
-
-        double fl_pow = fwd + strafe + rot;
-        double fr_pow = fwd - strafe - rot;
-        double bl_pow = fwd - strafe + rot;
-        double br_pow = fwd + strafe - rot;
-
-        // re-normalize so max = 1
-        double maxAbs = Math.max(
-            Math.max(Math.abs(fl_pow), Math.abs(fr_pow)),
-            Math.max(Math.abs(bl_pow), Math.abs(br_pow))
-        );
-        if (maxAbs > 1.0) {
-            double inv = 1.0 / maxAbs;
-            fl_pow *= inv; fr_pow *= inv;
-            bl_pow *= inv; br_pow *= inv;
-        }
-        return new double[]{ fl_pow, fr_pow, bl_pow, br_pow };
-    }
 
     /**
      * Applies an exponential input curve to a joystick value.
@@ -445,35 +371,6 @@ public class RobotHardware {
     public double getCorrectedH(double odomH) { return filterH.corrected(odomH); }
 
     // ─────────────────────────────────────────────────────────────
-    // FLYWHEEL PIDF
-    // ─────────────────────────────────────────────────────────────
-
-    public static class FlywheelController {
-        private final DcMotorEx motor;
-        private final double kP, kI, kD, kF;
-        private double integral = 0.0;
-
-        public FlywheelController(DcMotorEx motor, double kP, double kI, double kD, double kF) {
-            this.motor = motor;
-            this.kP = kP; this.kI = kI; this.kD = kD; this.kF = kF;
-        }
-
-        public double update(double targetVelocity, double batteryVoltage) {
-            double measured = motor.getVelocity();
-            double error = targetVelocity - measured;
-            integral += error * 0.001; // loop ≈ 1 ms
-            integral = clamp(integral, -12.0, 12.0);
-            double derivative = -motor.getVelocity(); // approximated from velocity change
-            double power = kP * error + kI * integral + kD * derivative + kF * targetVelocity;
-            return Range.clip(power / batteryVoltage, -1.0, 1.0);
-        }
-
-        public double getVelocity() { return motor.getVelocity(); }
-        public void setPower(double power) { motor.setPower(power); }
-        public void reset() { integral = 0.0; }
-    }
-
-    // ─────────────────────────────────────────────────────────────
     // HOOD LUT
     // ─────────────────────────────────────────────────────────────
 
@@ -520,14 +417,14 @@ public class RobotHardware {
     private int stallCheckCounter = 0;
     private boolean driveStalling = false;
 
-    /** Call every loop. Returns true if any drive motor is currently stalling. */
+    /** Call every loop. Returns true if any drive motor is drawing above the stall threshold. */
     public boolean isDriveStallingAny() {
         stallCheckCounter++;
         boolean anyStalling =
-            fl.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
-            fr.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
-            bl.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
-            br.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD;
+            fl.motor.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
+            fr.motor.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
+            bl.motor.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
+            br.motor.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD;
 
         if (anyStalling) {
             driveStalling = true;

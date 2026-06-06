@@ -2,13 +2,20 @@ package org.firstinspires.ftc.teamcode.subsystems;
 
 import static com.seattlesolvers.solverslib.util.MathUtils.clamp;
 
-import com.qualcomm.robotcore.hardware.Servo;
+import com.seattlesolvers.solverslib.hardware.servos.ServoEx;
 
 import org.firstinspires.ftc.teamcode.RobotHardware;
 
+/**
+ * Hood subsystem using ServoEx.
+ *
+ * ServoEx provides power caching (skips redundant writes when delta &lt; cachingTolerance)
+ * and cleaner hardware abstraction over the raw SDK Servo. Hardstops are enforced by clamp()
+ * on every write since setRange(0, 1) maps the output scale but does not clamp.
+ */
 public class HoodSubsystem extends com.seattlesolvers.solverslib.command.Subsystem {
-    private final Servo hoodL;
-    private final Servo hoodR;
+    private final ServoEx hoodL;
+    private final ServoEx hoodR;
 
     public HoodSubsystem(RobotHardware hw) {
         this.hoodL = hw.hoodL;
@@ -16,7 +23,7 @@ public class HoodSubsystem extends com.seattlesolvers.solverslib.command.Subsyst
     }
 
     /**
-     * Set hood to a raw servo position (0–1), clamped to hardstops.
+     * Set hood to a raw desired position, clamped to hardstops.
      * Use setForDistance() for normal aiming; this is for manual override.
      */
     public void setRaw(double position) {
@@ -37,18 +44,17 @@ public class HoodSubsystem extends com.seattlesolvers.solverslib.command.Subsyst
         double velDrop = targetVelocity - actualVelocity;
         double hoodOffset = velDrop * RobotHardware.HOOD_COMPENSATION_COEFFICIENT;
 
-        double finalPos = clamp(
+        double p = clamp(
             basePos + hoodOffset,
             RobotHardware.HOOD_MIN_POSITION,
             RobotHardware.HOOD_MAX_POSITION
         );
-
-        hoodL.setPosition(finalPos);
-        hoodR.setPosition(finalPos);
+        hoodL.setPosition(p);
+        hoodR.setPosition(p);
     }
 
     /**
-     * Set both hood servos to the same position.
+     * Set both hood servos to the same desired position.
      */
     public void setPosition(double position) {
         double p = clamp(position, RobotHardware.HOOD_MIN_POSITION, RobotHardware.HOOD_MAX_POSITION);
@@ -57,6 +63,6 @@ public class HoodSubsystem extends com.seattlesolvers.solverslib.command.Subsyst
     }
 
     public double getPosition() {
-        return hoodL.getPosition();
+        return hoodL.get();
     }
 }

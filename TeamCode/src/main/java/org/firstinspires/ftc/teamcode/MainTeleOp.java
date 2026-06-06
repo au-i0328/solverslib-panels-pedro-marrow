@@ -75,12 +75,6 @@ public class MainTeleOp extends CommandOpMode {
 
     // Alliance selection (locked after first press)
     private boolean allianceLocked = false;
-    private boolean triangleWasPressed = false;
-    private boolean circleWasPressed = false;
-
-    // Edge-detection state
-    private boolean imuResetWasPressed = false;
-    private boolean touchpadWasPressed = false;
 
     // Launch Zone RTP command
     private LaunchZoneRTPCommand launchZoneRTP;
@@ -189,25 +183,25 @@ public class MainTeleOp extends CommandOpMode {
     public void init_loop() {
         hw.clearBulkCache();
 
-        // Alliance selection — edge-triggered (locked after first press)
+        // Alliance selection — edge-triggered via GamepadEx readers
         if (!allianceLocked) {
-            boolean triangleNow = gamepad1.triangle;
-            boolean circleNow  = gamepad1.circle;
+            GamepadEx driverInit = new GamepadEx(gamepad1);
+            driverInit.readButtons();
 
-            if (triangleNow && !triangleWasPressed) {
+            boolean triangleNow = driverInit.wasJustPressed(GamepadKeys.Button.TRIANGLE);
+            boolean circleNow   = driverInit.wasJustPressed(GamepadKeys.Button.CIRCLE);
+
+            if (triangleNow) {
                 RobotHardware.ALLIANCE = RobotHardware.Alliance.RED;
                 RobotHardware.GOAL_COORDS = RobotHardware.RED_GOAL_COORDS;
                 limelight.pipelineSwitch(RobotHardware.RED_PIPELINE_INDEX);
                 allianceLocked = true;
-            } else if (circleNow && !circleWasPressed) {
+            } else if (circleNow) {
                 RobotHardware.ALLIANCE = RobotHardware.Alliance.BLUE;
                 RobotHardware.GOAL_COORDS = RobotHardware.BLUE_GOAL_COORDS;
                 limelight.pipelineSwitch(RobotHardware.BLUE_PIPELINE_INDEX);
                 allianceLocked = true;
             }
-
-            triangleWasPressed = triangleNow;
-            circleWasPressed  = circleNow;
         }
 
         telemetry.update();
@@ -261,37 +255,33 @@ public class MainTeleOp extends CommandOpMode {
         double robotH = hw.getCorrectedH(odoH);
 
         // ── 2. GAMEPAD INPUT ──────────────────────────────────
-        driver.readInputs();
-        operator.readInputs();
+        driver.readButtons();
+        operator.readButtons();
 
-        // Gamepad2 dpad offsets
-        if (gamepad2.dpad_up) {
+        // Gamepad2 dpad offsets — edge-triggered (only on press, not hold)
+        if (operator.wasJustPressed(GamepadKeys.Button.DPAD_UP)) {
             flywheel.addOffset(RobotHardware.FLYWHEEL_VELOCITY_OFFSET_JUMP);
         }
-        if (gamepad2.dpad_down) {
+        if (operator.wasJustPressed(GamepadKeys.Button.DPAD_DOWN)) {
             flywheel.addOffset(-RobotHardware.FLYWHEEL_VELOCITY_OFFSET_JUMP);
         }
-        if (gamepad2.dpad_left) {
+        if (operator.wasJustPressed(GamepadKeys.Button.DPAD_LEFT)) {
             RobotHardware.hoodAngleOffset += RobotHardware.HOOD_ANGLE_OFFSET_JUMP;
         }
-        if (gamepad2.dpad_right) {
+        if (operator.wasJustPressed(GamepadKeys.Button.DPAD_RIGHT)) {
             RobotHardware.hoodAngleOffset -= RobotHardware.HOOD_ANGLE_OFFSET_JUMP;
         }
 
         // Option → reset IMU (edge-triggered)
-        if (gamepad1.options && !imuResetWasPressed) {
+        if (driver.wasJustPressed(GamepadKeys.Button.OPTIONS)) {
             hw.imu.resetYaw();
-            imuResetWasPressed = true;
         }
-        if (!gamepad1.options) imuResetWasPressed = false;
 
         // Touchpad → reset deadwheel odometry pose (edge-triggered)
-        if (gamepad1.touchpad && !touchpadWasPressed) {
+        if (driver.wasJustPressed(GamepadKeys.Button.TOUCHPAD)) {
             follower.setPose(new Pose(0, 0, 0));
             hw.initLocalizer();
-            touchpadWasPressed = true;
         }
-        if (!gamepad1.touchpad) touchpadWasPressed = false;
 
         // ── 3. STATE MACHINE ──────────────────────────────────
         controller.update(gamepad1, gamepad2, dt);
@@ -320,7 +310,7 @@ public class MainTeleOp extends CommandOpMode {
         }
 
         // ── 5. LAUNCH ZONE RTP ────────────────────────────────
-        boolean rightTrigger = gamepad1.right_trigger > 0.5;
+        boolean rightTrigger = driver.getTrigger(GamepadKeys.Trigger.RIGHT_TRIGGER) > 0.5;
         launchZoneActive = rightTrigger && (state == RobotState.ALIGNING || state == RobotState.ALIGNED);
         launchZoneRTP.setActive(launchZoneActive);
         if (launchZoneActive) {
@@ -376,11 +366,11 @@ public class MainTeleOp extends CommandOpMode {
         }
 
         boolean stalling = hw.isDriveStallingAny();
-        drive.driveFieldCentric(blendedFwd, blendedStrafe, rot, yaw, hw.batteryVoltage(), stalling);
+        drive.driveFieldCentric(blendedFwd, blendedStrafe, rot, yaw);
 
         // ── 9. isReadyToShoot VIBRATION ────────────────────
         boolean ready = isReadyToShoot();
-        boolean shareHeld = gamepad2.share;
+        boolean shareHeld = operator.isDown(GamepadKeys.Button.SHARE);
         if ((ready || shareHeld) && (ready != wasReady() || shareHeld != wasShareHeld())) {
             driver.rumbleBlips(2);
             operator.rumbleBlips(2);
@@ -430,7 +420,7 @@ public class MainTeleOp extends CommandOpMode {
         return velocityOK && distOK;
     }
 
-    private boolean isShareHeld() { return gamepad2.share; }
+    private boolean isShareHeld() { return operator.isDown(GamepadKeys.Button.SHARE); }
 
     // Prev-ready state for edge detection of isReadyToShoot
     private boolean prevReady = false;

@@ -1,30 +1,30 @@
 package org.firstinspires.ftc.teamcode.subsystems;
 
-import com.qualcomm.robotcore.hardware.DcMotorEx;
-import com.qualcomm.robotcore.util.Range;
+import com.seattlesolvers.solverslib.hardware.Motor;
 
-import org.firstinspires.ftc.teamcode.RobotHardware;
-
+/**
+ * Intake subsystem using SolversLib Motor.
+ */
 public class IntakeSubsystem extends com.seattlesolvers.solverslib.command.Subsystem {
-    private final DcMotorEx motor;
+    private final Motor motor;
 
     public IntakeSubsystem(RobotHardware hw) {
         this.motor = hw.intake;
     }
 
     public void runForward() {
-        motor.setPower(1.0);
+        motor.set(1.0);
     }
 
     public void runReverse() {
-        motor.setPower(-1.0);
+        motor.set(-1.0);
     }
 
     public void stop() {
-        motor.setPower(0);
+        motor.stopMotor();
     }
 
     public boolean isRunning() {
-        return Math.abs(motor.getPower()) > 0.01;
+        return Math.abs(motor.get()) > 0.01;
     }
 }

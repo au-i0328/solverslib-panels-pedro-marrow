@@ -1,23 +1,39 @@
 package org.firstinspires.ftc.teamcode.subsystems;
 
 import com.pedropathing.follower.Follower;
-import com.qualcomm.robotcore.hardware.DcMotorEx;
-import com.qualcomm.robotcore.hardware.DcMotorEx.CurrentUnit;
-import com.qualcomm.robotcore.util.Range;
+import com.seattlesolvers.solverslib.drivebase.MecanumDrive;
+import com.seattlesolvers.solverslib.hardware.MotorEx;
+import com.seattlesolvers.solverslib.hardware.Motor;
+import com.seattlesolvers.solverslib.controller.PIDFController;
+import com.seattlesolvers.solverslib.controller.Feedforward;
+import com.seattlesolvers.solverslib.util.SimpleMotorFeedforward;
 
-import org.firstinspires.ftc.teamcode.RobotHardware;
-
+/**
+ * Drivetrain subsystem using SolversLib MecanumDrive.
+ *
+ * MecanumDrive handles field-centric / robot-centric kinematics internally.
+ * A PIDFController corrects heading error during auto-align; a SimpleMotorFeedforward
+ * provides kS/kV/kA feedforward so the PID loop only handles disturbance correction.
+ */
 public class DriveSubsystem extends com.seattlesolvers.solverslib.command.Subsystem {
-    private final DcMotorEx fl, fr, bl, br;
+    private final MotorEx fl, fr, bl, br;
+    private final MecanumDrive mecanum;
     private final Follower follower;
 
-    // Motor constants — mirror RobotHardware so we avoid a dep cycle (hardware → subsystem → hardware)
-    // GoBilda 435 RPM (5202 Series) — 13.7:1 planetary, 384.5 PPR encoder
-    private static final double TPR         = 384.5;
-    private static final double R_MOTOR    = 12.0 / 9.2;
-    private static final double OMEGA_NOLOAD = 435.0 * 2.0 * Math.PI / 60.0;
-    private static final double KEMF        = (12.0 - 0.25 * R_MOTOR) / OMEGA_NOLOAD;
-    private static final double MAX_CURRENT = RobotHardware.DRIVE_MAX_CURRENT;
+    // Heading PIDF for auto-align rotation correction
+    private static final double HEADING_KP = 0.05;
+    private static final double HEADING_KI = 0.0;
+    private static final double HEADING_KD = 0.0;
+    private static final double HEADING_KF = 0.0;
+    private final PIDFController headingPid = new PIDFController(HEADING_KP, HEADING_KI, HEADING_KD, HEADING_KF);
+
+    // Feedforward: kS = static friction, kV = velocity, kA = acceleration
+    // Tune via Panels by changing DRIVE_KFF_S / DRIVE_KFF_V / DRIVE_KFF_A
+    public static double DRIVE_KFF_S = 0.0;
+    public static double DRIVE_KFF_V = 1.0 / 2800.0;  // fraction of max speed per ticks/sec
+    public static double DRIVE_KFF_A = 0.0;
+    private final SimpleMotorFeedforward feedforward =
+        new SimpleMotorFeedforward(DRIVE_KFF_S, DRIVE_KFF_V, DRIVE_KFF_A);
 
     public DriveSubsystem(RobotHardware hw, Follower follower) {
         this.fl = hw.fl;
@@ -25,86 +41,49 @@ public class DriveSubsystem extends com.seattlesolvers.solverslib.command.Subsys
         this.bl = hw.bl;
         this.br = hw.br;
         this.follower = follower;
+
+        this.mecanum = new MecanumDrive(fl, fr, bl, br);
+        this.mecanum.setFeedforward(feedforward);
     }
 
     /**
-     * Field-centric mecanum drive with torque-current control and stall limiting.
-     * Applies input curve, voltage compensation, and per-motor current clamping.
+     * Field-centric mecanum drive.
+     * @param forward   forward/back (positive = forward)
+     * @param strafe    left/right (positive = right)
+     * @param rotation  rotation (positive = CW)
+     * @param yawRadians current IMU yaw in radians
      */
-    public void driveFieldCentric(double forward, double strafe, double rotation,
-                                  double yawRadians, double batteryVoltage,
-                                  boolean isStalling) {
-        // Apply input curve
-        forward  = RobotHardware.applyInputCurve(forward, RobotHardware.DRIVE_INPUT_CURVE_EXP);
-        strafe   = RobotHardware.applyInputCurve(strafe,  RobotHardware.DRIVE_INPUT_CURVE_EXP);
-        rotation = RobotHardware.applyInputCurve(rotation, RobotHardware.DRIVE_INPUT_CURVE_EXP);
-
-        // Rotate joystick vectors by -yaw to get field-relative
-        double cos = Math.cos(-yawRadians);
-        double sin = Math.sin(-yawRadians);
-        double fwdField = forward * cos - strafe * sin;
-        double strafeField = forward * sin + strafe * cos;
-
-        double[] raw = RobotHardware.mecanumPowers(fwdField, strafeField, rotation);
-        DcMotorEx[] motors = { fl, fr, bl, br };
-        double[] powers = new double[4];
-
-        int checkInterval = isStalling ? 1 : RobotHardware.CURRENT_CHECK_INTERVAL;
-
-        for (int i = 0; i < 4; i++) {
-            double vRaw = raw[i] * 12.0;
-            double omega = motors[i].getVelocity() / TPR * 2.0 * Math.PI;
-            double vBackEmf = KEMF * omega;
-
-            double iTarget = Math.abs(raw[i]) < 0.01 ? 0.0 : MAX_CURRENT;
-            double vMin = vBackEmf - iTarget * R_MOTOR;
-            double vMax = vBackEmf + iTarget * R_MOTOR;
-            double vCmd = Range.clip(vRaw, Math.min(vMin, vMax), Math.max(vMin, vMax));
-
-            powers[i] = Range.clip(vCmd / batteryVoltage, -1.0, 1.0);
-        }
-
-        fl.setPower(powers[0]);
-        fr.setPower(powers[1]);
-        bl.setPower(powers[2]);
-        br.setPower(powers[3]);
+    public void driveFieldCentric(double forward, double strafe, double rotation, double yawRadians) {
+        mecanum.driveFieldCentric(strafe, forward, rotation, Math.toDegrees(yawRadians));
     }
 
     /**
-     * Robot-centric drive with same torque-current control.
+     * Robot-centric mecanum drive.
      */
-    public void driveRobotCentric(double forward, double strafe, double rotation,
-                                  double batteryVoltage, boolean isStalling) {
-        forward  = RobotHardware.applyInputCurve(forward,  RobotHardware.DRIVE_INPUT_CURVE_EXP);
-        strafe   = RobotHardware.applyInputCurve(strafe,   RobotHardware.DRIVE_INPUT_CURVE_EXP);
-        rotation = RobotHardware.applyInputCurve(rotation, RobotHardware.DRIVE_INPUT_CURVE_EXP);
+    public void driveRobotCentric(double forward, double strafe, double rotation) {
+        mecanum.driveRobotCentric(strafe, forward, rotation);
+    }
 
-        double[] raw = RobotHardware.mecanumPowers(forward, strafe, rotation);
-        DcMotorEx[] motors = { fl, fr, bl, br };
+    /**
+     * Drive with heading correction (for auto-align to limelight crosshairs).
+     * @param forward  forward/back
+     * @param strafe   left/right
+     * @param rotation driver rotation override (added to heading correction)
+     * @param yawRadians current IMU yaw in radians
+     * @param targetHeadingDegrees heading to hold (from odometry or limelight)
+     */
+    public void driveWithHeadingCorrection(double forward, double strafe, double rotation,
+                                          double yawRadians, double targetHeadingDegrees) {
+        // Feedforward correction toward target heading
+        headingPid.setSetPoint(targetHeadingDegrees);
+        double currentHeadingDeg = Math.toDegrees(yawRadians);
+        double correction = headingPid.calculate(currentHeadingDeg);
 
-        for (int i = 0; i < 4; i++) {
-            double vRaw = raw[i] * 12.0;
-            double omega = motors[i].getVelocity() / TPR * 2.0 * Math.PI;
-            double vBackEmf = KEMF * omega;
-
-            double iTarget = Math.abs(raw[i]) < 0.01 ? 0.0 : MAX_CURRENT;
-            double vMin = vBackEmf - iTarget * R_MOTOR;
-            double vMax = vBackEmf + iTarget * R_MOTOR;
-            double vCmd = Range.clip(vRaw, Math.min(vMin, vMax), Math.max(vMin, vMax));
-
-            motors[i].setPower(Range.clip(vCmd / batteryVoltage, -1.0, 1.0));
-        }
+        double totalRotation = rotation + correction;
+        mecanum.driveFieldCentric(strafe, forward, totalRotation, currentHeadingDeg);
     }
 
     public void stop() {
-        fl.setPower(0); fr.setPower(0);
-        bl.setPower(0); br.setPower(0);
-    }
-
-    public boolean isAnyStalling() {
-        return fl.getCurrent(CurrentUnit.AMPS) > RobotHardware.DRIVE_STALL_CURRENT_THRESHOLD
-            || fr.getCurrent(CurrentUnit.AMPS) > RobotHardware.DRIVE_STALL_CURRENT_THRESHOLD
-            || bl.getCurrent(CurrentUnit.AMPS) > RobotHardware.DRIVE_STALL_CURRENT_THRESHOLD
-            || br.getCurrent(CurrentUnit.AMPS) > RobotHardware.DRIVE_STALL_CURRENT_THRESHOLD;
+        mecanum.stop();
     }
 }
