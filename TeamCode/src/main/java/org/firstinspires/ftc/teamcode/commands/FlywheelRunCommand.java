@@ -32,7 +32,10 @@ public class FlywheelRunCommand implements Command {
 
     @Override
     public void execute() {
-        flywheel.update(0.015);  // assume ~15 ms loop — pass real dt from OpMode when possible
+        // Voltage clamping uses dt=0.015 as a conservative fixed estimate.
+        // The actual loop dt is passed from the OpMode; call update(dt) instead of
+        // relying on this command when possible.
+        flywheel.update(0.015);
 
         if (limelightDistance > 0) {
             hood.setForDistance(

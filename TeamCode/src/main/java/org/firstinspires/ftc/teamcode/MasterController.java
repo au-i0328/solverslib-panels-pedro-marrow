@@ -142,7 +142,6 @@ public class MasterController {
 
         // ── EDGE DETECTION ─────────────────────────────────────────
         boolean leftBumper   = gamepad1.left_bumper || gamepad2.left_bumper;
-        boolean rightBumper  = gamepad1.right_bumper || gamepad2.right_bumper;
         boolean rightTrigger = gamepad1.right_trigger > 0.5;
 
         // Left trigger: edge-triggered (pressed, not held)
@@ -169,8 +168,8 @@ public class MasterController {
             return;
         }
 
-        // Right bumper → INTAKE
-        if (rightBumper) {
+        // Right bumper → INTAKE (gamepad1 only)
+        if (gamepad1.right_bumper) {
             state = RobotState.INTAKE;
             gate.close();
             intake.stop();
@@ -254,9 +253,9 @@ public class MasterController {
 
                 // Left trigger (edge-triggered) fires the shot
                 if (leftTriggerRising) {
-                    // isReadyToShoot is normally checked here, but gamepad2.share overrides it
-                    boolean readyOverride = shareRising && gamepad2.share;
-                    if (readyOverride || (readyCheck != null && readyCheck.isReady())) {
+                    // isReadyToShoot is normally checked here, but gamepad2.share overrides it.
+                    // shareRising is already edge-detected above — check share held instead.
+                    if (gamepad2.share || (readyCheck != null && readyCheck.isReady())) {
                         state = RobotState.SHOOT;
                         wasShooting = true;
                         shootCommand.execute();

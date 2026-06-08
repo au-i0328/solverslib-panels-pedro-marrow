@@ -9,6 +9,7 @@ import com.seattlesolvers.solverslib.command.Subsystem;
 import com.seattlesolvers.solverslib.gamepad.GamepadEx;
 import com.seattlesolvers.solverslib.gamepad.GamepadKeys;
 import com.seattlesolvers.solverslib.util.TelemetryData;
+import com.skeletonarmyftc.marrow.util.Settings;
 
 import org.firstinspires.ftc.teamcode.commands.BaseZoneRTPCommand;
 import org.firstinspires.ftc.teamcode.commands.LaunchZoneRTPCommand;
@@ -32,8 +33,9 @@ import java.util.List;
  *   Right Bumper → INTAKE
  *   Left Bumper held → INTAKE_REVERSE (king)
  *   Triangle/Circle → alliance selection in INIT  [locked after first press]
- *   Option → reset IMU (edge-triggered)
- *   Touchpad → reset deadwheel odometry pose to 0,0,0
+ *   Option → re-zero field-centric drive yaw to current heading (no IMU reset)
+ *   Touchpad → set pose to (72, 144) — alliance heading
+ *   Share → re-seed pose from Limelight MegaTag (edge-triggered)
  *
  * Gamepad2:
  *   dpad_up/down → adjust flywheel velocity offset
@@ -77,6 +79,22 @@ public class MainTeleOp extends CommandOpMode {
     // One-shot flag: prevents restorePoseFromSettings from running more than once per start
     private boolean poseRestored = false;
 
+    // Pose persistence — save every 5 seconds via Marrow Settings
+    private final ElapsedTime poseSaveTimer = new ElapsedTime();
+    private static final double POSE_SAVE_INTERVAL = 5.0; // seconds
+    private static final String SETTING_POSE_X   = "pose_x";
+    private static final String SETTING_POSE_Y   = "pose_y";
+    private static final String SETTING_POSE_H   = "pose_h";
+
+    // Drive re-zero: captures the IMU yaw at the moment Options is pressed so field-centric
+    // drive can re-align its forward direction without modifying the raw IMU used by localization.
+    private double driveYawOffset = 0.0;
+
+    // True for one loop tick after initLocalizer() is called; signals the next valid vision
+    // reading should anchor the filters immediately (staleness check bypassed) rather than
+    // waiting for a fresh frame and growing Kalman uncertainty in the meantime.
+    private boolean localizerJustReset = false;
+
     // Alliance selection (locked after first press)
     private boolean allianceLocked = false;
 
@@ -90,10 +108,19 @@ public class MainTeleOp extends CommandOpMode {
     private boolean shootHoodLocked = false;
     private double lockedHoodPosition = 0.0;
 
+    // Rumble state machine: 50ms on → 50ms off → 50ms on when isReadyToShoot first becomes true
+    private enum RumblePhase { OFF, RUMBLE_1, PAUSE, RUMBLE_2 }
+    private RumblePhase rumblePhase = RumblePhase.OFF;
+    private final com.qualcomm.robotcore.util.ElapsedTime rumbleTimer = new com.qualcomm.robotcore.util.ElapsedTime();
+
     // Blended drive inputs from launch zone RTP
     private double blendedFwd = 0.0;
     private double blendedStrafe = 0.0;
+    private double prevDriverFwd = 0.0;
+    private double prevDriverStrafe = 0.0;
     private boolean launchZoneActive = false;
+
+    // Marrow PolygonZone representing the robot's physical footprint (size set in RobotHardware)
 
     @Override
     public void initialize() {
@@ -165,7 +192,11 @@ public class MainTeleOp extends CommandOpMode {
             () -> -driver.getLeftY(),
             () -> -driver.getLeftX(),
             fwd -> blendedFwd = fwd,
-            strafe -> blendedStrafe = strafe
+            strafe -> blendedStrafe = strafe,
+            () -> blendedFwd,
+            () -> blendedStrafe,
+            null,
+            () -> RobotHardware.ROBOT_ZONE
         );
 
         // Base Zone RTP
@@ -237,9 +268,8 @@ public class MainTeleOp extends CommandOpMode {
         controller.setState(RobotState.INTAKE);
 
         // Restore pose from Marrow Settings if available (pose persistence across plays)
-        // poseRestored is a one-shot flag — read runs on first loop() call after start()
+        // Flag is cleared here; the actual read happens on the first loop() tick (non-blocking).
         poseRestored = false;
-        restorePoseFromSettings();
 
         loopTimer.reset();
     }
@@ -251,6 +281,12 @@ public class MainTeleOp extends CommandOpMode {
         loopTimer.reset();
 
         // ── 1. LOCALIZATION ──────────────────────────────────────
+        // Pose restore: runs once on the first loop tick after start().
+        // Limelight has had ~1+ loops to warm up by this point, so MegaTag data is available.
+        if (!poseRestored) {
+            restorePoseFromSettings();
+        }
+
         // updateRobotOrientation must come BEFORE follower.update() so Pedro's
         // TwoWheelLocalizer and the drift filter share the same yaw snapshot.
         limelight.updateRobotOrientation(hw.getYawRadians());
@@ -264,9 +300,18 @@ public class MainTeleOp extends CommandOpMode {
 
         hw.predictLocalizer(dt);  // grow Kalman uncertainty with time
 
-        // MegaTag vision update — refine drift estimates when a fresh tag is visible
+        // MegaTag vision update — refine drift estimates when a fresh tag is visible.
+        // When the localizer was just reset (pose restore, Touchpad, or Share), accept
+        // any valid reading immediately to anchor the filters — don't wait for a fresh
+        // frame and let Kalman uncertainty grow in the meantime.
         var result = limelight.getLatestResult();
-        if (result != null && result.isValid() && result.getStaleness() < 0.1) {
+        boolean useResult = result != null && result.isValid();
+        if (useResult) {
+            if (!localizerJustReset && result.getStaleness() >= 0.1) {
+                useResult = false;
+            }
+        }
+        if (useResult) {
             double[] botpose = result.getBotpose_MT2();
             if (botpose != null && botpose.length >= 6) {
                 hw.updateLocalizerFromVision(
@@ -274,6 +319,9 @@ public class MainTeleOp extends CommandOpMode {
                     botpose[0], botpose[1], Math.toRadians(botpose[5])
                 );
             }
+        }
+        if (useResult) {
+            localizerJustReset = false;
         }
 
         // Apply drift corrections on top of Pedro's pose
@@ -299,15 +347,26 @@ public class MainTeleOp extends CommandOpMode {
             RobotHardware.hoodAngleOffset -= RobotHardware.HOOD_ANGLE_OFFSET_JUMP;
         }
 
-        // Option → reset IMU (edge-triggered)
+        // Option → re-zero field-centric drive without touching the IMU (edge-triggered)
         if (driver.wasJustPressed(GamepadKeys.Button.OPTIONS)) {
-            hw.imu.resetYaw();
+            driveYawOffset = hw.getYawRadians();
         }
 
-        // Touchpad → reset deadwheel odometry pose (edge-triggered)
+        // Touchpad → reset deadwheel odometry pose to match field position (edge-triggered)
         if (driver.wasJustPressed(GamepadKeys.Button.TOUCHPAD)) {
-            follower.setPose(new Pose(0, 0, 0));
+            double targetYaw = (RobotHardware.ALLIANCE == RobotHardware.Alliance.RED) ? 0.0 : Math.PI;
+            follower.setPose(new Pose(72, 144, targetYaw));
+            hw.imu.resetYaw();
             hw.initLocalizer();
+            localizerJustReset = true;
+            driveYawOffset = 0.0;
+            // Vibrate 200 ms to confirm reset
+            driver.rumble(200);
+        }
+
+        // Gamepad1 Share → re-seed pose from MegaTag vision (edge-triggered)
+        if (driver.wasJustPressed(GamepadKeys.Button.SHARE)) {
+            reinitializePoseFromLimelight();
         }
 
         // ── 3. STATE MACHINE ──────────────────────────────────
@@ -341,9 +400,16 @@ public class MainTeleOp extends CommandOpMode {
         boolean baseZoneActive = operator.isDown(GamepadKeys.Button.LEFT_STICK_BUTTON)
                              && operator.isDown(GamepadKeys.Button.RIGHT_STICK_BUTTON);
 
-        // Right trigger held while aligning → Launch Zone pull
-        boolean rightTrigger = driver.getTrigger(GamepadKeys.Trigger.RIGHT_TRIGGER) > 0.5;
-        launchZoneActive = rightTrigger && (state == RobotState.ALIGNING || state == RobotState.ALIGNED);
+        // Right trigger held while aligning/aligned → Launch Zone pull
+        // Only activates when robot footprint is NOT even partially in either launch zone
+        RobotHardware.ROBOT_ZONE.setPosition(robotX, robotY);
+        RobotHardware.ROBOT_ZONE.setRotation(robotH);
+        boolean outsideZones = !RobotHardware.ROBOT_ZONE.isInside(RobotHardware.CLOSE_LAUNCH_ZONE)
+                            && !RobotHardware.ROBOT_ZONE.isInside(RobotHardware.FAR_LAUNCH_ZONE);
+        boolean rightTrigger = driver.getTrigger(GamepadKeys.Trigger.RIGHT_TRIGGER) > 0.1;
+        launchZoneActive = rightTrigger
+                && (state == RobotState.ALIGNING || state == RobotState.ALIGNED)
+                && outsideZones;
 
         // Priority: base zone > launch zone > raw driver
         if (baseZoneActive) {
@@ -392,7 +458,7 @@ public class MainTeleOp extends CommandOpMode {
         }
 
         // ── 8. DRIVE ─────────────────────────────────────
-        double yaw = hw.getYawRadians();
+        double yaw = hw.getYawRadians() - driveYawOffset;
 
         // During alignment, blend auto-rotation correction with driver rotation
         boolean isAligning = state == RobotState.ALIGNING || state == RobotState.ALIGNED;
@@ -410,9 +476,42 @@ public class MainTeleOp extends CommandOpMode {
         drive.driveFieldCentric(blendedFwd, blendedStrafe, rot, yaw);
 
         // ── 9. isReadyToShoot VIBRATION ────────────────────
-        boolean ready = isReadyToShoot();
+        // 50ms on → 50ms off → 50ms on: fires once on the rising edge of isReadyToShoot.
+        // shareHeld overrides silently without triggering the ready rumble.
+        boolean ready = isReadyToShoot(robotX, robotY);
         boolean shareHeld = operator.isDown(GamepadKeys.Button.SHARE);
-        if ((ready || shareHeld) && (ready != wasReady() || shareHeld != wasShareHeld())) {
+
+        if (ready && !wasReady() && !shareHeld) {
+            // Rising edge of ready — start rumble sequence
+            rumblePhase = RumblePhase.RUMBLE_1;
+            rumbleTimer.reset();
+            driver.rumble(50);
+            operator.rumble(50);
+        } else if (rumblePhase != RumblePhase.OFF && rumbleTimer.seconds() >= 1.0) {
+            // 50ms on + 50ms off + 50ms on = 150ms total — 1.0s safety timeout
+            rumblePhase = RumblePhase.OFF;
+            driver.stopRumble();
+            operator.stopRumble();
+        } else if (rumblePhase == RumblePhase.PAUSE && rumbleTimer.seconds() >= 0.05) {
+            // Pause done → second rumble
+            rumblePhase = RumblePhase.RUMBLE_2;
+            rumbleTimer.reset();
+            driver.rumble(50);
+            operator.rumble(50);
+        } else if (rumblePhase == RumblePhase.RUMBLE_2 && rumbleTimer.seconds() >= 0.05) {
+            // Second rumble done
+            rumblePhase = RumblePhase.OFF;
+            driver.stopRumble();
+            operator.stopRumble();
+        } else if (!ready && !shareHeld) {
+            // Robot is not ready — cancel any in-progress rumble
+            rumblePhase = RumblePhase.OFF;
+            driver.stopRumble();
+            operator.stopRumble();
+        }
+
+        // shareHeld override edge detection: 2 blips on rising edge
+        if (shareHeld && !wasShareHeld()) {
             driver.rumbleBlips(2);
             operator.rumbleBlips(2);
         }
@@ -421,6 +520,15 @@ public class MainTeleOp extends CommandOpMode {
         // ── 10. TELEMETRY ──────────────────────────────────
         sendTelemetry(result, robotX, robotY, robotH, ready, shareHeld, state, poseDist,
                 baseZoneActive, launchZoneActive);
+
+        // ── 11. POSE PERSISTENCE ─────────────────────────
+        // Periodically save current pose to Marrow Settings so it survives across plays
+        if (poseSaveTimer.seconds() >= POSE_SAVE_INTERVAL) {
+            poseSaveTimer.reset();
+            Settings.set(SETTING_POSE_X, robotX);
+            Settings.set(SETTING_POSE_Y, robotY);
+            Settings.set(SETTING_POSE_H, robotH);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -436,10 +544,18 @@ public class MainTeleOp extends CommandOpMode {
         return dist;
     }
 
-    private boolean isReadyToShoot() {
+    private boolean isReadyToShoot(double robotX, double robotY) {
         if (controller.getState() != RobotState.ALIGNED) return false;
         var r = limelight.getLatestResult();
         if (r == null || !r.isValid()) return false;
+
+        // isReadyToShoot is true when the robot footprint (partial or full) is inside
+        // either launch zone, flywheels are up to speed, and pose distance is valid.
+        RobotHardware.ROBOT_ZONE.setPosition(robotX, robotY);
+        RobotHardware.ROBOT_ZONE.setRotation(robotH);
+        boolean inCloseZone = RobotHardware.ROBOT_ZONE.isInside(RobotHardware.CLOSE_LAUNCH_ZONE);
+        boolean inFarZone   = RobotHardware.ROBOT_ZONE.isInside(RobotHardware.FAR_LAUNCH_ZONE);
+        if (!inCloseZone && !inFarZone) return false;
 
         double velL = flywheel.getVelocityL();
         double velR = flywheel.getVelocityR();
@@ -469,25 +585,49 @@ public class MainTeleOp extends CommandOpMode {
     // savePoseToSettings is a no-op placeholder — Marrow Settings integration pending.
 
     /**
-     * Attempts to restore the robot pose from Marrow Settings.
-     * If no saved pose is available (first match / fresh deploy), falls back to
-     * reading the pose from Limelight MegaTag and seeding Pedro's localizer.
+     * Restores the robot pose from Marrow Settings (if saved from a previous play),
+     * falling back to MegaTag vision on the first loop tick.
+     *
+     * Settings are loaded first; if no saved pose exists, MegaTag is used.
+     * The IMU yaw is also reset to match the restored heading so Pedro's
+     * TwoWheelLocalizer and the drift filter agree.
      *
      * Orientation is set based on alliance:
      *   RED  → 0 radians  (facing toward the red scoring wall)
      *   BLUE → π radians (facing toward the blue scoring wall)
-     *
-     * The IMU is also reset so its yaw aligns with the chosen orientation,
-     * ensuring Pedro's TwoWheelLocalizer and the drift filter agree.
      */
     private void restorePoseFromSettings() {
-        // TODO: integrate Marrow Settings for pose persistence across plays
-        // For now, always seed from MegaTag when a target is visible.
-
-        // One-shot guard — only run once per OpMode start
         if (poseRestored) return;
         poseRestored = true;
 
+        // ── 1. Try Marrow Settings ──────────────────────────────────
+        double savedX = Settings.get(SETTING_POSE_X, Double.NaN);
+        double savedY = Settings.get(SETTING_POSE_Y, Double.NaN);
+        double savedH = Settings.get(SETTING_POSE_H, Double.NaN);
+
+        if (!Double.isNaN(savedX) && !Double.isNaN(savedY) && !Double.isNaN(savedH)) {
+            // Valid saved pose found — use it
+            double targetYaw = (RobotHardware.ALLIANCE == RobotHardware.Alliance.RED) ? 0.0 : Math.PI;
+            follower.setPose(new Pose(savedX, savedY, targetYaw));
+            hw.imu.resetYaw();
+            hw.initLocalizer();
+            localizerJustReset = true;
+            driveYawOffset = 0.0;
+            return;
+        }
+
+        // ── 2. Fallback: seed from MegaTag ─────────────────────────
+        reinitializePoseFromLimelight();
+    }
+
+    /**
+     * Re-initializes the robot pose using the current MegaTag vision estimate.
+     * Reads the latest Limelight result, rotates the vision XY into Pedro's frame
+     * using the alliance heading, seeds Pedro's localizer, and resets the IMU yaw.
+     *
+     * Call this to recover from odometry drift at any time during the match.
+     */
+    private void reinitializePoseFromLimelight() {
         var result = limelight.getLatestResult();
         if (result == null || !result.isValid()) {
             return;
@@ -522,6 +662,11 @@ public class MainTeleOp extends CommandOpMode {
 
         // Reset Kalman filters to start clean from the new pose
         hw.initLocalizer();
+
+        // Reset drive re-zero so field-centric forward aligns with the new orientation
+        // Anchor the filters on the next valid vision reading without a staleness requirement.
+        localizerJustReset = true;
+        driveYawOffset = 0.0;
     }
 
     // ── POSE GETTERS (for LaunchZoneRTPCommand) ──────────

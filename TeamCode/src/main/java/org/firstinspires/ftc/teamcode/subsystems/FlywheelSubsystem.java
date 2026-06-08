@@ -1,6 +1,5 @@
 package org.firstinspires.ftc.teamcode.subsystems;
 
-import com.qualcomm.robotcore.hardware.DcMotorEx.CurrentUnit;
 import com.seattlesolvers.solverslib.hardware.MotorEx;
 
 /**
@@ -8,30 +7,26 @@ import com.seattlesolvers.solverslib.hardware.MotorEx;
  *
  * Voltage loop per motor (per cycle):
  *
- *   ω_measured  = motor.getVelocity() / TPR × 2π         (rad/s from ticks/s)
- *   vBackEmf    = K_EMF × ω_measured                    (opposes applied voltage)
+ *   ω_measured  = motor.getVelocity() / TPR × 2π          (rad/s from ticks/s)
+ *   vBackEmf   = K_EMF × ω_measured                     (opposes applied voltage)
  *
  *   PID corrective voltage:
- *     err        = targetVelocity − ω_measured
- *     integral   = clamp(integral + err·dt, −12, 12)
- *     derivative = (err − prevErr) / dt
+ *     err        = targetVelocity − motor.getVelocity()
+ *     integral   = clamp(integral + err·dt, −MAX_INT_VOLTAGE/ki, MAX_INT_VOLTAGE/ki)
+ *     derivative = (dt > 0.0001) ? (err − prevErr) / dt : 0
  *     vPID      = kP·err + kI·integral + kD·derivative + kF·targetVelocity
  *
- *   vTarget     = vPID + vBackEmf                        (back-EMF compensation)
+ *   vTarget    = vPID + vBackEmf                         (back-EMF compensation)
+ *   power      = vTarget / batteryVoltage
  *
- *   Torque limiting (clamp voltage within what produces MAX_CURRENT):
- *     iTarget    = MAX_CURRENT  (always active — flywheels are load-bearing)
- *     vMin       = vBackEmf − iTarget × R_MOTOR
- *     vMax       = vBackEmf + iTarget × R_MOTOR
- *     vClamped   = clamp(vTarget, vMin, vMax)
- *
- *   power       = vClamped / batteryVoltage
+ * No current limiting is applied to the flywheel motors — current limiting
+ * is only used on the drive motors. The integral clamp (MAX_INTEGRAL_VOLTAGE)
+ * prevents wind-up without needing a current ceiling.
  */
 public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Subsystem {
     private final MotorEx motorL;
     private final MotorEx motorR;
 
-    // Velocity target in ticks/sec — mutable so gamepad offsets adjust it live
     public double targetVelocity = RobotHardware.FLYWHEEL_TARGET_VELOCITY;
 
     // Per-motor PIDF state
@@ -43,7 +38,6 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
     public FlywheelSubsystem(RobotHardware hw) {
         this.motorL = hw.flywheelL;
         this.motorR = hw.flywheelR;
-        // VelocityControl mode and feedforward are set in RobotHardware.init()
     }
 
     public void addOffset(double delta) {
@@ -74,74 +68,54 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
         applyVoltageLoop(motorL, targetVelocity, dt, batt,
                 RobotHardware.FLYWHEEL_TPR,
                 RobotHardware.FLYWHEEL_K_EMF,
-                RobotHardware.FLYWHEEL_R,
-                RobotHardware.FLYWHEEL_MAX_CURRENT,
                 RobotHardware.FLYWHEEL_L_KP,
                 RobotHardware.FLYWHEEL_L_KI,
                 RobotHardware.FLYWHEEL_L_KD,
-                RobotHardware.FLYWHEEL_L_KF,
-                new double[]{integralL, prevErrL});
+                RobotHardware.FLYWHEEL_L_KF);
 
         applyVoltageLoop(motorR, targetVelocity, dt, batt,
                 RobotHardware.FLYWHEEL_TPR,
                 RobotHardware.FLYWHEEL_K_EMF,
-                RobotHardware.FLYWHEEL_R,
-                RobotHardware.FLYWHEEL_MAX_CURRENT,
                 RobotHardware.FLYWHEEL_R_KP,
                 RobotHardware.FLYWHEEL_R_KI,
                 RobotHardware.FLYWHEEL_R_KD,
-                RobotHardware.FLYWHEEL_R_KF,
-                new double[]{integralR, prevErrR});
+                RobotHardware.FLYWHEEL_R_KF);
     }
 
-    /**
-     * Voltage loop for a single motor.
-     *
-     * Arrays are used for integral/prevErr so the caller can persist state between loops
-     * without exposing mutable fields.
-     */
     private void applyVoltageLoop(
             MotorEx motor,
-            double targetVel,   // ticks/s
+            double targetVel,
             double dt,
             double batt,
             double tpr,
             double kEmf,
-            double rMotor,
-            double maxCurrent,
-            double kp, double ki, double kd, double kf,
-            double[] state     // [0] = integral, [1] = prevErr (mutated in place)
+            double kp, double ki, double kd, double kf
     ) {
-        double omegaMeas  = motor.getVelocity() / tpr * 2.0 * Math.PI; // rad/s
+        double omegaMeas = motor.getVelocity() / tpr * 2.0 * Math.PI;
         double vBackEmf  = kEmf * omegaMeas;
 
-        // PID on velocity error
-        double err = targetVel - motor.getVelocity(); // ticks/s error
-        state[0] = clamp(state[0] + err * dt, -12.0, 12.0);
-        double deriv = (err - state[1]) / dt;
-        state[1] = err;
+        double err = targetVel - motor.getVelocity();
 
-        // PIDF: kP·e + kI·∫e + kD·de/dt + kF·targetVelocity
-        double vPID = kp * err + ki * state[0] + kd * deriv + kf * targetVel;
+        double integral = (motor == motorL) ? integralL : integralR;
+        double prevErr  = (motor == motorL) ? prevErrL  : prevErrR;
 
-        // Add back-EMF compensation so vPID represents error correction around the
-        // actual motor operating point rather than around zero
+        // Bound I-term by voltage contribution so the clamp is ki-independent
+        double maxIntSum = (ki == 0.0) ? 0.0 : (RobotHardware.FLYWHEEL_MAX_INTEGRAL_VOLTAGE / ki);
+        integral = clamp(integral + err * dt, -maxIntSum, maxIntSum);
+
+        // Guard against division by zero on first loop or stalls
+        double deriv = (dt > 0.0001) ? (err - prevErr) / dt : 0.0;
+
+        double vPID    = kp * err + ki * integral + kd * deriv + kf * targetVel;
         double vTarget = vPID + vBackEmf;
 
-        // Torque limiting — clamp voltage to what produces maxCurrent
-        double iTarget = maxCurrent;
-        double vMin = vBackEmf - iTarget * rMotor;
-        double vMax = vBackEmf + iTarget * rMotor;
-        double vClamped = Math.max(vMin, Math.min(vMax, vTarget));
-        double power = vClamped / batt;
+        motor.set(vTarget / batt);
 
-        motor.set(power);
-
-        // Update caller's integral/prevErr state
+        // Persist state
         if (motor == motorL) {
-            integralL = state[0]; prevErrL = state[1];
+            integralL = integral; prevErrL = err;
         } else {
-            integralR = state[0]; prevErrR = state[1];
+            integralR = integral; prevErrR = err;
         }
     }
 

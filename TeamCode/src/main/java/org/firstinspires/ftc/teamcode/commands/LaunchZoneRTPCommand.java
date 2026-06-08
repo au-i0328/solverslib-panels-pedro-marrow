@@ -27,8 +27,17 @@ public class LaunchZoneRTPCommand implements Command {
     private final java.util.function.Supplier<Double> getDriverStrafe; // -1 to 1
     private final java.util.function.DoubleConsumer setBlendedFwd;
     private final java.util.function.DoubleConsumer setBlendedStrafe;
+    private final java.util.function.Supplier<Double> getBlendedFwd; // previous frame's output
+    private final java.util.function.Supplier<Double> getBlendedStrafe; // previous frame's output
+    private final java.util.function.DoubleConsumer onTargetPointChanged; // optional hook
+    /** Supplier for the live robot footprint zone (position/rotation synced each loop). */
+    private final java.util.function.Supplier<PolygonZone> getRobotZone;
 
     private boolean active = false;
+
+    // Live target point — continuously updated while driver is adding input
+    private double targetX;
+    private double targetY;
 
     public LaunchZoneRTPCommand(
             java.util.function.Supplier<Double> getRobotX,
@@ -37,7 +46,11 @@ public class LaunchZoneRTPCommand implements Command {
             java.util.function.Supplier<Double> getDriverFwd,
             java.util.function.Supplier<Double> getDriverStrafe,
             java.util.function.DoubleConsumer setBlendedFwd,
-            java.util.function.DoubleConsumer setBlendedStrafe) {
+            java.util.function.DoubleConsumer setBlendedStrafe,
+            java.util.function.Supplier<Double> getBlendedFwd,
+            java.util.function.Supplier<Double> getBlendedStrafe,
+            java.util.function.DoubleConsumer onTargetPointChanged,
+            java.util.function.Supplier<PolygonZone> getRobotZone) {
         this.getRobotX = getRobotX;
         this.getRobotY = getRobotY;
         this.getRobotH = getRobotH;
@@ -45,10 +58,27 @@ public class LaunchZoneRTPCommand implements Command {
         this.getDriverStrafe = getDriverStrafe;
         this.setBlendedFwd = setBlendedFwd;
         this.setBlendedStrafe = setBlendedStrafe;
+        this.getBlendedFwd = getBlendedFwd;
+        this.getBlendedStrafe = getBlendedStrafe;
+        this.onTargetPointChanged = onTargetPointChanged;
+        this.getRobotZone = getRobotZone;
     }
 
     /** Call every loop to activate launch zone pull. */
-    public void setActive(boolean a) { this.active = a; }
+    public void setActive(boolean a) {
+        if (a && !this.active) {
+            // Fresh activation — sync robot footprint then find closest boundary point
+            PolygonZone rz = getRobotZone.get();
+            rz.setPosition(getRobotX.get(), getRobotY.get());
+            rz.setRotation(getRobotH.get());
+
+            PolygonZone nearest = nearestZone(getRobotX.get(), getRobotY.get());
+            double[] cp = closestPointOnPolygon(getRobotX.get(), getRobotY.get(), nearest);
+            this.targetX = cp[0];
+            this.targetY = cp[1];
+        }
+        this.active = a;
+    }
 
     @Override
     public void execute() {
@@ -57,15 +87,37 @@ public class LaunchZoneRTPCommand implements Command {
         double robotH = getRobotH.get();
 
         if (active) {
-            // Pick the nearer zone
-            PolygonZone nearest = nearestZone(robotX, robotY);
+            // Sync robot footprint to live pose
+            PolygonZone rz = getRobotZone.get();
+            rz.setPosition(robotX, robotY);
+            rz.setRotation(robotH);
 
-            // Closest point on the nearest zone's boundary
-            double[] closest = closestPointOnPolygon(robotX, robotY, nearest);
+            // Raw driver input (robot frame)
+            double driverFwd    = getDriverFwd.get();
+            double driverStrafe = getDriverStrafe.get();
+            double rawMag = Math.sqrt(driverFwd * driverFwd + driverStrafe * driverStrafe);
 
-            // Pull unit vector toward that closest point
-            double dx = closest[0] - robotX;
-            double dy = closest[1] - robotY;
+            // Previous frame's blended output (world frame)
+            double prevFwd    = getBlendedFwd.get();
+            double prevStrafe = getBlendedStrafe.get();
+            double prevMag = Math.sqrt(prevFwd * prevFwd + prevStrafe * prevStrafe);
+
+            // If driver is intentionally adding input, update the target to follow
+            if (rawMag > 0.1 && rawMag > prevMag * 1.05) {
+                PolygonZone nearest = nearestZone(robotX, robotY);
+                double[] cp = closestPointOnPolygon(robotX, robotY, nearest);
+                if (Double.isFinite(cp[0]) && Double.isFinite(cp[1])) {
+                    this.targetX = cp[0];
+                    this.targetY = cp[1];
+                    if (onTargetPointChanged != null) {
+                        onTargetPointChanged.accept(0.0);
+                    }
+                }
+            }
+
+            // Pull unit vector toward the live target point
+            double dx = targetX - robotX;
+            double dy = targetY - robotY;
             double dist = Math.sqrt(dx * dx + dy * dy);
 
             double toZoneX, toZoneY;
@@ -78,8 +130,6 @@ public class LaunchZoneRTPCommand implements Command {
             }
 
             // Driver input in world frame (robotH → field orientation)
-            double driverFwd    = getDriverFwd.get();
-            double driverStrafe = getDriverStrafe.get();
             double driverWorldX =  driverFwd * Math.cos(robotH) - driverStrafe * Math.sin(robotH);
             double driverWorldY =  driverFwd * Math.sin(robotH) + driverStrafe * Math.cos(robotH);
 

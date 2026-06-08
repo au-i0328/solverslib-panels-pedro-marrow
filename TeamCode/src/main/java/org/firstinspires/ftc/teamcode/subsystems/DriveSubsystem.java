@@ -32,15 +32,19 @@ public class DriveSubsystem extends MecanumDrive {
     private static final double OMEGA_NOLOAD = 435.0 * 2.0 * Math.PI / 60.0; // rad/s ≈ 45.55
     private static final double K_EMF = (12.0 - V_RESISTOR) / OMEGA_NOLOAD;   // V/(rad/s) ≈ 0.256
 
-    /** Max current per motor (amps) — triggers voltage clamping. */
-    public static double MAX_CURRENT = 3.0;
+    /** Max current per motor (amps) — used for both voltage clamping and stall detection. */
+    private static final double MAX_CURRENT = RobotHardware.DRIVE_MAX_CURRENT;
 
     /** Stall-check polling interval in loop iterations. 0 = always check. */
     public static int STALL_CHECK_INTERVAL = 10;
 
     // ── State ─────────────────────────────────────────────────
-    private int  stallCounter = 0;
-    private boolean stalling  = false;
+    private int   stallCounter = 0;
+    private boolean stalling   = false;
+    // Power scale: 1.0 = full power; ramps down to STALL_POWER_FLOOR when stalling.
+    private double stallPowerScale = 1.0;
+    private static final double STALL_POWER_FLOOR = 0.3;
+
     private final MotorEx[] allMotors;
 
     public DriveSubsystem(RobotHardware hw, Follower follower) {
@@ -76,7 +80,13 @@ public class DriveSubsystem extends MecanumDrive {
      */
     @Override
     public void driveFieldCentric(double strafe, double forward, double turn, double gyroAngle) {
-        strafe = clipRange(strafe);
+        // Apply input curve to joystick inputs
+        double exp = RobotHardware.DRIVE_INPUT_CURVE_EXP;
+        strafe  = RobotHardware.applyInputCurve(strafe,  exp);
+        forward = RobotHardware.applyInputCurve(forward, exp);
+        turn    = RobotHardware.applyInputCurve(turn,    exp);
+
+        strafe  = clipRange(strafe);
         forward = clipRange(forward);
         turn    = clipRange(turn);
 
@@ -141,6 +151,11 @@ public class DriveSubsystem extends MecanumDrive {
             double vClamped = Math.max(vMin, Math.min(vMax, vTarget));
             double power    = vClamped / batt;
 
+            // Override: scale down all wheel powers when stalling to protect motors
+            if (stallPowerScale < 1.0) {
+                power *= stallPowerScale;
+            }
+
             m.set(power);
 
             if (m.getCurrent(CurrentUnit.AMPS) > MAX_CURRENT) {
@@ -148,12 +163,18 @@ public class DriveSubsystem extends MecanumDrive {
             }
         }
 
+        // Ramp stall power scale toward target to avoid sudden jumps.
+        // Going UP:   immediate reduction when stalling is detected.
+        // Going DOWN: recover gradually to give motors time to stabilize.
         if (anyStalling) {
             stallCounter = 0;
             stalling = true;
+            stallPowerScale = Math.max(stallPowerScale - 0.15, STALL_POWER_FLOOR);
         } else if (STALL_CHECK_INTERVAL > 0 && stallCounter >= STALL_CHECK_INTERVAL) {
             stalling = false;
             stallCounter = 0;
+            // Recover gradually: step 10 % per interval check
+            stallPowerScale = Math.min(stallPowerScale + 0.10, 1.0);
         }
     }
 
@@ -168,5 +189,6 @@ public class DriveSubsystem extends MecanumDrive {
         for (MotorEx m : allMotors) m.stopMotor();
         stalling = false;
         stallCounter = 0;
+        stallPowerScale = 1.0;
     }
 }

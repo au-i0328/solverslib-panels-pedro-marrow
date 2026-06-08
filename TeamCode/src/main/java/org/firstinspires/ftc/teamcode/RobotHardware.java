@@ -58,17 +58,17 @@ public class RobotHardware {
     /** Close launch zone — right-triangle in the scoring corner (Pedro coords). */
     public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone CLOSE_LAUNCH_ZONE =
             new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(142, 144),
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(72,  74),
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(2,   144)
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(144, 144),
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(72,  72),
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(0,   144)
             );
 
     /** Far launch zone — smaller triangle toward field center (Pedro coords). */
     public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone FAR_LAUNCH_ZONE =
             new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(50,  0),
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(72,  22),
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(94,  0)
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(58,  0),
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(72,  24),
+                    new com.skeletonarmyftc.marrow.spatial.zone.Point(96,  0)
             );
 
     // ─────────────────────────────────────────────────────────────
@@ -95,13 +95,31 @@ public class RobotHardware {
                     20, 20
             );
 
-    /** Robot collision zone — 18×18 in² square for base-zone pull calculation. */
-    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone ROBOT_ZONE =
-            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(18, 18);
+    /**
+     * Robot footprint size in inches — both width and length (square bot).
+     * Adjust this to match your actual robot dimensions; used to build ROBOT_ZONE
+     * and for all perimeter-aware zone checks.
+     */
+    public static double ROBOT_SIZE_INCHES = 18.0;
+
+    /**
+     * Robot collision zone — square polygon representing the robot's physical footprint.
+     * Position and rotation must be updated every loop to track the live robot pose.
+     * Recreated whenever ROBOT_SIZE_INCHES changes.
+     */
+    public static com.skeletonarmyftc.marrow.spatial.zone.PolygonZone ROBOT_ZONE =
+            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(ROBOT_SIZE_INCHES, ROBOT_SIZE_INCHES);
 
     // ─────────────────────────────────────────────────────────────
     // FLYWHEEL
     // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Switch between flywheel control modes:
+     *   true  = FlywheelSubsystem     — custom voltage-loop with back-EMF compensation
+     *   false = FlywheelSubsystemSimple — SolversLib MotorEx built-in PIDF
+     */
+    public static final boolean FLYWHEEL_USE_VOLTAGE_LOOP = false;
 
     public static double FLYWHEEL_TARGET_VELOCITY = 2800.0; // ticks/sec per motor
     public static double FLYWHEEL_READY_TOLERANCE = 150.0;  // ticks/sec — isReadyToShoot threshold
@@ -121,57 +139,20 @@ public class RobotHardware {
     // Flywheel velocity offset increments (gamepad2 dpad)
     public static double FLYWHEEL_VELOCITY_OFFSET_JUMP = 50.0;
 
-    // ─────────────────────────────────────────────────────────────
-    // FLYWHEEL MOTOR PHYSICS  (GoBilda 5202 435 RPM — 13.7:1 planetary)
-    // ─────────────────────────────────────────────────────────────
-
-    public static double FLYWHEEL_TPR    = 384.5;  // ticks/revolution
-    public static double FLYWHEEL_RPM    = 6000.0;  // no-load RPM at 12 V
-    public static double FLYWHEEL_OMEGA  = FLYWHEEL_RPM * 2.0 * Math.PI / 60.0; // rad/s
-
-    /** Motor stall current (amps). */
-    public static double FLYWHEEL_I_STALL = 9.2;
-    /** Winding resistance (Ω). */
-    public static double FLYWHEEL_R       = 12.0 / FLYWHEEL_I_STALL;           // Ω  ≈ 1.30
-    /** Voltage drop across winding resistance at no-load current (~0.25 A). */
-    public static double FLYWHEEL_V_RES   = 0.25 * FLYWHEEL_R;                  // V  ≈ 0.326
     /**
-     * Back-EMF constant (V/(rad/s)).
-     * Derived: V = V_res + kEMF·ω  →  kEMF = (12 − V_res) / ω_noloload
+     * Encoder ticks per revolution for the MR encoder on GoBilda 5202 motors.
+     * Used by the voltage-loop subsystem to convert ticks/sec → rad/s.
      */
-    public static double FLYWHEEL_K_EMF   = (12.0 - FLYWHEEL_V_RES) / FLYWHEEL_OMEGA; // V/(rad/s) ≈ 0.256
+    public static double FLYWHEEL_TPR = 384.5;
+
+    public static double FLYWHEEL_K_EMF = (12.0 - 0.326) / (6000.0 * 2.0 * Math.PI / 60.0); // V/(rad/s) ≈ 0.0186
 
     /**
-     * Max current per flywheel motor (amps) — triggers voltage clamping.
-     * Tunable live via Panels.
+     * Maximum voltage contribution from the I-term. Prevents the integral from
+     * accumulating beyond this regardless of ki. Keeps integral wind-up bounded
+     * and ki-independent.
      */
-    public static double FLYWHEEL_MAX_CURRENT = 3.0;
-
-    // ─────────────────────────────────────────────────────────────
-    // INTAKE MOTOR PHYSICS  (GoBilda 5202 312 RPM — 19.2:1 planetary)
-    // ─────────────────────────────────────────────────────────────
-
-    public static double INTAKE_TPR   = 384.5;
-    public static double INTAKE_RPM   = 1150.0;
-    public static double INTAKE_I_STALL = 9.2;
-    public static double INTAKE_R      = 12.0 / INTAKE_I_STALL;           // Ω  ≈ 1.30
-    public static double INTAKE_V_RES  = 0.25 * INTAKE_R;                  // V  ≈ 0.326
-    public static double INTAKE_OMEGA  = INTAKE_RPM * 2.0 * Math.PI / 60.0; // rad/s
-    public static double INTAKE_K_EMF  = (12.0 - INTAKE_V_RES) / INTAKE_OMEGA; // V/(rad/s)
-
-    /**
-     * Max current per intake motor (amps) — triggers voltage clamping.
-     * Tunable live via Panels.
-     */
-    public static double INTAKE_MAX_CURRENT = 4.0;
-
-    /**
-     * Intake no-load max velocity in ticks/sec (GoBilda 312 RPM, 384.5 CPR).
-     * Used to derive kV = 12 / maxVel for feedforward.
-     * Note: actual max velocity will be slightly lower due to load; the voltage loop
-     * corrects for this. Change INTAKE_RPM in RobotHardware to match your motor.
-     */
-    public static double INTAKE_MAX_VELOCITY = INTAKE_TPR * INTAKE_RPM / 60.0; // ticks/s ≈ 2005
+    public static double FLYWHEEL_MAX_INTEGRAL_VOLTAGE = 3.0; // volts
 
     // ─────────────────────────────────────────────────────────────
     // SHOOT SEQUENCE
@@ -244,7 +225,8 @@ public class RobotHardware {
     // DRIVE MOTOR CURRENT LIMITING
     // ─────────────────────────────────────────────────────────────
 
-    public static double DRIVE_STALL_CURRENT_THRESHOLD = 2.5; // amps — triggers torque limiting
+    public static double DRIVE_MAX_CURRENT               = 3.0; // amps — voltage clamping ceiling
+    public static double DRIVE_STALL_CURRENT_THRESHOLD    = 2.5; // amps — triggers torque limiting
     public static int    CURRENT_CHECK_INTERVAL       = 30;   // poll current every N loops when not stalling
 
     // ─────────────────────────────────────────────────────────────
@@ -259,7 +241,7 @@ public class RobotHardware {
     // ─────────────────────────────────────────────────────────────
 
     /** How strongly the driver joystick overrides the auto pull toward the launch zone. */
-    public static double VECTOR_WEIGHT_DRIVER = 0.6;
+    public static double VECTOR_WEIGHT_DRIVER = 0.7;
 
     // ─────────────────────────────────────────────────────────────
     // KALMAN LOCALIZER TUNING
@@ -300,6 +282,13 @@ public class RobotHardware {
     // Live hood angle offset (modified by gamepad2 dpad) — static for tuning access
     public static double hoodAngleOffset = 0.0;
 
+
+    /**
+     * Intake motor power in volts. Battery compensation scales this automatically
+     * so the intake runs at consistent speed regardless of battery voltage.
+     */
+    public static double INTAKE_POWER = 10.0;
+
     // ─────────────────────────────────────────────────────────────
     // INIT
     // ─────────────────────────────────────────────────────────────
@@ -336,15 +325,15 @@ public class RobotHardware {
         flywheelL.setRunMode(Motor.RunMode.VelocityControl);
         flywheelR.setRunMode(Motor.RunMode.VelocityControl);
 
-        double flyMaxVel = FLYWHEEL_TPR * FLYWHEEL_RPM / 60.0; // ticks/s
-        double flyKV = 12.0 / flyMaxVel;
+        // 384.5 ticks/rev × 6000 RPM / 60 = 38450 ticks/s
+        double flyKV = 12.0 / (384.5 * 6000.0 / 60.0);
         flywheelL.setFeedforwardCoefficients(0.15, flyKV);
         flywheelR.setFeedforwardCoefficients(0.15, flyKV);
 
-        // Intake motor — no encoder, no feedforward, no velocity control.
-        // Driven via pure feedforward + voltage compensation in IntakeSubsystem.
+        // Intake motor — no encoder. Driven via setPower with battery voltage compensation.
         intake = new Motor(hwMap, "intake");
         intake.setInverted(false);
+
 
         // Phase 2 — reverse the right hood servo so the group can accept a single value
         ServoEx _hoodL = new ServoEx(hwMap, "hoodL");
