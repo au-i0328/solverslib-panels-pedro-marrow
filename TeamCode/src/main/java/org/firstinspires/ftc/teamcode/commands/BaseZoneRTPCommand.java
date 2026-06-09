@@ -1,8 +1,11 @@
 package org.firstinspires.ftc.teamcode.commands;
 
+import java.util.Set;
+
 import com.seattlesolvers.solverslib.command.Command;
-import com.skeletonarmyftc.marrow.spatial.zone.PolygonZone;
-import com.skeletonarmyftc.marrow.spatial.zone.Point;
+import com.seattlesolvers.solverslib.command.Subsystem;
+import com.skeletonarmy.marrow.zones.PolygonZone;
+import com.skeletonarmy.marrow.zones.Point;
 
 import org.firstinspires.ftc.teamcode.RobotHardware;
 
@@ -64,12 +67,12 @@ public class BaseZoneRTPCommand implements Command {
                     ? RobotHardware.RED_BASE_ZONE
                     : RobotHardware.BLUE_BASE_ZONE;
 
-            // Compute base zone center from vertices (PolygonZone doesn't expose getCenter)
-            Point[] verts = baseZone.getVertices();
+            // Compute base zone center from corners (PolygonZone doesn't expose getCenter)
+            Point[] corners = baseZone.getCorners();
             double cx = 0, cy = 0;
-            for (Point v : verts) { cx += v.x; cy += v.y; }
-            cx /= verts.length;
-            cy /= verts.length;
+            for (Point v : corners) { cx += v.getX(); cy += v.getY(); }
+            cx /= corners.length;
+            cy /= corners.length;
 
             // Pull unit vector toward the base zone center
             double dx = cx - robotX;
@@ -118,8 +121,13 @@ public class BaseZoneRTPCommand implements Command {
     }
 
     @Override
-    public void end() {
+    public void end(boolean interrupted) {
         setBlendedFwd.accept(getDriverFwd.get());
         setBlendedStrafe.accept(getDriverStrafe.get());
+    }
+
+    @Override
+    public Set<Subsystem> getRequirements() {
+        return Set.of(); // No subsystem requirements — pure math/vector computation
     }
 }

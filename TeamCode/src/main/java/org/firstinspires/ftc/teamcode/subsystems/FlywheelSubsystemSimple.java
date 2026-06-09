@@ -1,6 +1,7 @@
 package org.firstinspires.ftc.teamcode.subsystems;
 
-import com.seattlesolvers.solverslib.hardware.MotorEx;
+import com.seattlesolvers.solverslib.hardware.motors.MotorEx;
+import org.firstinspires.ftc.teamcode.RobotHardware;
 
 /**
  * Flywheel subsystem using SolversLib MotorEx's built-in velocity PIDF controller.
@@ -14,7 +15,7 @@ import com.seattlesolvers.solverslib.hardware.MotorEx;
  *   MotorEx internally runs: output = kP·err + kI·∫err + kD·d(err)/dt + kF·targetVelocity
  *   output is scaled by battery voltage automatically.
  */
-public class FlywheelSubsystemSimple extends com.seattlesolvers.solverslib.command.Subsystem {
+public class FlywheelSubsystemSimple implements com.seattlesolvers.solverslib.command.Subsystem {
     private final MotorEx motorL;
     private final MotorEx motorR;
 
@@ -24,19 +25,11 @@ public class FlywheelSubsystemSimple extends com.seattlesolvers.solverslib.comma
         this.motorL = hw.flywheelL;
         this.motorR = hw.flywheelR;
 
-        // MotorEx.setVelocityCoefficients() takes (kP, kI, kD, kF) for the velocity PIDF.
-        // These are set once at init and used every time setVelocity() is called.
-        motorL.setVelocityCoefficients(
-                RobotHardware.FLYWHEEL_L_KP,
-                RobotHardware.FLYWHEEL_L_KI,
-                RobotHardware.FLYWHEEL_L_KD,
-                RobotHardware.FLYWHEEL_L_KF);
-
-        motorR.setVelocityCoefficients(
-                RobotHardware.FLYWHEEL_R_KP,
-                RobotHardware.FLYWHEEL_R_KI,
-                RobotHardware.FLYWHEEL_R_KD,
-                RobotHardware.FLYWHEEL_R_KF);
+        // MotorEx's built-in velocity PID is used for flywheel control.
+        // setFeedforwardCoefficients(ks, kv): ks = static friction, kv = velocity constant.
+        // KV is not defined in RobotHardware for flywheels, so use 0 (PID handles everything).
+        motorL.setFeedforwardCoefficients(RobotHardware.FLYWHEEL_L_KF, 0.0);
+        motorR.setFeedforwardCoefficients(RobotHardware.FLYWHEEL_R_KF, 0.0);
     }
 
     public void addOffset(double delta) {

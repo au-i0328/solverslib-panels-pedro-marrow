@@ -1,10 +1,13 @@
 package org.firstinspires.ftc.teamcode.subsystems;
 
 import com.pedropathing.follower.Follower;
+import com.seattlesolvers.solverslib.command.Subsystem;
 import com.seattlesolvers.solverslib.drivebase.MecanumDrive;
+import com.seattlesolvers.solverslib.drivebase.RobotDrive.MotorType;
 import com.seattlesolvers.solverslib.geometry.Vector2d;
-import com.seattlesolvers.solverslib.hardware.MotorEx;
-import com.qualcomm.robotcore.hardware.DcMotorEx.CurrentUnit;
+import com.seattlesolvers.solverslib.hardware.motors.MotorEx;
+import org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit;
+import org.firstinspires.ftc.teamcode.RobotHardware;
 
 /**
  * Drivetrain subsystem using SolversLib MecanumDrive with voltage-based
@@ -22,7 +25,7 @@ import com.qualcomm.robotcore.hardware.DcMotorEx.CurrentUnit;
  * Note: the parent MecanumDrive holds motor references; this class overrides
  * driveFieldCentric() so the parent motor handles are never written to.
  */
-public class DriveSubsystem extends MecanumDrive {
+public class DriveSubsystem extends MecanumDrive implements Subsystem {
 
     // ── Motor physics (GoBilda 435 RPM — 13.7:1 planetary, 384.5 CPR) ──
     private static final double TPR         = 384.5;                           // ticks/revolution
@@ -38,6 +41,12 @@ public class DriveSubsystem extends MecanumDrive {
     /** Stall-check polling interval in loop iterations. 0 = always check. */
     public static int STALL_CHECK_INTERVAL = 10;
 
+    // Motor indices matching MotorType enum order (FL=0, FR=1, BL=2, BR=3)
+    private static final int IDX_FL = MotorType.kFrontLeft.value;
+    private static final int IDX_FR = MotorType.kFrontRight.value;
+    private static final int IDX_BL = MotorType.kBackLeft.value;
+    private static final int IDX_BR = MotorType.kBackRight.value;
+
     // ── State ─────────────────────────────────────────────────
     private int   stallCounter = 0;
     private boolean stalling   = false;
@@ -46,9 +55,11 @@ public class DriveSubsystem extends MecanumDrive {
     private static final double STALL_POWER_FLOOR = 0.3;
 
     private final MotorEx[] allMotors;
+    private final RobotHardware hw;
 
     public DriveSubsystem(RobotHardware hw, Follower follower) {
         super(true, hw.fl, hw.fr, hw.bl, hw.br);
+        this.hw = hw;
 
         // Store handles so voltage control and stall detection can access motors directly.
         // Parent MecanumDrive also holds references; this class fully overrides
@@ -56,6 +67,7 @@ public class DriveSubsystem extends MecanumDrive {
         allMotors = new MotorEx[]{ hw.fl, hw.fr, hw.bl, hw.br };
 
         // kV = 12 V / maxVelocity → motor.set(1.0) = maxVelocity
+        // setFeedforwardCoefficients lives on Motor (parent class), not MotorEx.
         double maxVel = TPR * 435.0 / 60.0;  // ≈ 2769 ticks/sec for GoBilda 435 RPM
         double kV = 12.0 / maxVel;
         double kS = 0.15;  // V — overcomes static friction
@@ -97,28 +109,28 @@ public class DriveSubsystem extends MecanumDrive {
         double theta = input.angle();
 
         double[] raw = new double[4];
-        raw[kFrontLeft]  = Math.sin(theta + Math.PI / 4);
-        raw[kFrontRight] = Math.sin(theta - Math.PI / 4);
-        raw[kBackLeft]   = Math.sin(theta - Math.PI / 4);
-        raw[kBackRight]  = Math.sin(theta + Math.PI / 4);
+        raw[IDX_FL] = Math.sin(theta + Math.PI / 4);
+        raw[IDX_FR] = Math.sin(theta - Math.PI / 4);
+        raw[IDX_BL] = Math.sin(theta - Math.PI / 4);
+        raw[IDX_BR] = Math.sin(theta + Math.PI / 4);
 
         normalize(raw, input.magnitude());
 
         // Turn correction — left motors +, right motors −
-        raw[kFrontLeft]  += turn;
-        raw[kFrontRight] -= turn;
-        raw[kBackLeft]   += turn;
-        raw[kBackRight]  -= turn;
+        raw[IDX_FL] += turn;
+        raw[IDX_FR] -= turn;
+        raw[IDX_BL] += turn;
+        raw[IDX_BR] -= turn;
 
         normalize(raw);
 
         // Right motors are hardware-inverted (fr.setInverted(true), br.setInverted(true))
         // in RobotHardware.init(), so powers are passed directly.
         applyVoltageControl(
-            raw[kFrontLeft],
-            raw[kFrontRight],
-            raw[kBackLeft],
-            raw[kBackRight]
+            raw[IDX_FL],
+            raw[IDX_FR],
+            raw[IDX_BL],
+            raw[IDX_BR]
         );
     }
 
@@ -127,7 +139,7 @@ public class DriveSubsystem extends MecanumDrive {
      * Replaces the raw motor.set() call from MecanumDrive.
      */
     private void applyVoltageControl(double flPow, double frPow, double blPow, double brPow) {
-        double batt = RobotHardware.batteryVoltage();
+        double batt = hw.batteryVoltage();
         double[] fractions = { flPow, frPow, blPow, brPow };
 
         stallCounter++;

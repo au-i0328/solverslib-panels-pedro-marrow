@@ -4,23 +4,18 @@ import static com.seattlesolvers.solverslib.util.MathUtils.clamp;
 
 import androidx.annotation.NonNull;
 
-import com.pedropathing.geometry.Point;
+import com.pedropathing.geometry.Pose;
 import com.qualcomm.hardware.lynx.LynxModule;
 import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.HardwareMap;
-import com.seattlesolvers.solverslib.hardware.servos.ServoEx;
-import com.seattlesolvers.solverslib.hardware.servos.ServoExGroup;
-import com.seattlesolvers.solverslib.hardware.MotorEx;
-import com.seattlesolvers.solverslib.hardware.Motor;
+import com.seattlesolvers.solverslib.hardware.motors.Motor;
 import com.seattlesolvers.solverslib.hardware.motors.Motor.GoBILDA;
+import com.seattlesolvers.solverslib.hardware.motors.MotorEx;
 import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
-import com.qualcomm.robotcore.hardware.DcMotorEx.CurrentUnit;
-import com.qualcomm.robotcore.external.navigation.AngleUnit;
-import com.qualcomm.robotcore.external.navigation.YawPitchRollAngles;
 
 import java.util.List;
 
@@ -29,7 +24,7 @@ import java.util.List;
  * Panels Configurables are declared as {@code public static} fields so live tuning
  * works without redeploying code.
  */
-@org.bylazar.ftcontrol.panels.configurables.annotations.Configurable
+@com.bylazar.configurables.annotations.Configurable
 public class RobotHardware {
 
     // ─────────────────────────────────────────────────────────────
@@ -43,32 +38,32 @@ public class RobotHardware {
 
     /** Goal position in Pedro coordinates (origin = bottom-left, [0,144]).
      *  Switched at runtime in init_loop() to select the correct alliance target. */
-    public static Point GOAL_COORDS = new Point(144, 72);
+    public static Pose GOAL_COORDS = new Pose(144, 72);
 
     /** Red alliance goal coordinates (Pedro field, origin = bottom-left). */
-    public static Point RED_GOAL_COORDS   = new Point(144, 144);
+    public static Pose RED_GOAL_COORDS   = new Pose(144, 144);
 
     /** Blue alliance goal coordinates (Pedro field, origin = bottom-left). */
-    public static Point BLUE_GOAL_COORDS  = new Point(0, 144);
+    public static Pose BLUE_GOAL_COORDS  = new Pose(0, 144);
 
     // ─────────────────────────────────────────────────────────────
     // LAUNCH ZONE POLYGONS (Marrow PolygonZone) — pull-to-zone RTP
     // ─────────────────────────────────────────────────────────────
 
     /** Close launch zone — right-triangle in the scoring corner (Pedro coords). */
-    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone CLOSE_LAUNCH_ZONE =
-            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(144, 144),
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(72,  72),
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(0,   144)
+    public static final com.skeletonarmy.marrow.zones.PolygonZone CLOSE_LAUNCH_ZONE =
+            new com.skeletonarmy.marrow.zones.PolygonZone(
+                    new com.skeletonarmy.marrow.zones.Point(144, 144),
+                    new com.skeletonarmy.marrow.zones.Point(72,  72),
+                    new com.skeletonarmy.marrow.zones.Point(0,   144)
             );
 
     /** Far launch zone — smaller triangle toward field center (Pedro coords). */
-    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone FAR_LAUNCH_ZONE =
-            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(58,  0),
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(72,  24),
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(96,  0)
+    public static final com.skeletonarmy.marrow.zones.PolygonZone FAR_LAUNCH_ZONE =
+            new com.skeletonarmy.marrow.zones.PolygonZone(
+                    new com.skeletonarmy.marrow.zones.Point(58,  0),
+                    new com.skeletonarmy.marrow.zones.Point(72,  24),
+                    new com.skeletonarmy.marrow.zones.Point(96,  0)
             );
 
     // ─────────────────────────────────────────────────────────────
@@ -79,9 +74,9 @@ public class RobotHardware {
      * Blue alliance base zone — 20×20 in² square centered at (105.5, 33.5).
      * Represent the robot as an 18×18 in² zone for collision padding.
      */
-    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone BLUE_BASE_ZONE =
-            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(105.5, 33.5),
+    public static final com.skeletonarmy.marrow.zones.PolygonZone BLUE_BASE_ZONE =
+            new com.skeletonarmy.marrow.zones.PolygonZone(
+                    new com.skeletonarmy.marrow.zones.Point(105.5, 33.5),
                     20, 20
             );
 
@@ -89,9 +84,9 @@ public class RobotHardware {
      * Red alliance base zone — 20×20 in² square centered at (38.5, 33.5).
      * Represent the robot as an 18×18 in² zone for collision padding.
      */
-    public static final com.skeletonarmyftc.marrow.spatial.zone.PolygonZone RED_BASE_ZONE =
-            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(
-                    new com.skeletonarmyftc.marrow.spatial.zone.Point(38.5, 33.5),
+    public static final com.skeletonarmy.marrow.zones.PolygonZone RED_BASE_ZONE =
+            new com.skeletonarmy.marrow.zones.PolygonZone(
+                    new com.skeletonarmy.marrow.zones.Point(38.5, 33.5),
                     20, 20
             );
 
@@ -107,8 +102,8 @@ public class RobotHardware {
      * Position and rotation must be updated every loop to track the live robot pose.
      * Recreated whenever ROBOT_SIZE_INCHES changes.
      */
-    public static com.skeletonarmyftc.marrow.spatial.zone.PolygonZone ROBOT_ZONE =
-            new com.skeletonarmyftc.marrow.spatial.zone.PolygonZone(ROBOT_SIZE_INCHES, ROBOT_SIZE_INCHES);
+    public static com.skeletonarmy.marrow.zones.PolygonZone ROBOT_ZONE =
+            new com.skeletonarmy.marrow.zones.PolygonZone(ROBOT_SIZE_INCHES, ROBOT_SIZE_INCHES);
 
     // ─────────────────────────────────────────────────────────────
     // FLYWHEEL
@@ -266,14 +261,14 @@ public class RobotHardware {
     public MotorEx odomPara;       // parallel pod — forward encoder (measures forward/straight)
     public MotorEx odomPerpend;    // perpendicular pod — lateral encoder (measures strafing)
     public Motor intake;
-    public ServoExGroup hood;
-    public ServoEx gate;
+    public Servo[] hood;   // [0]=hoodL, [1]=hoodR (hoodR physically reversed in wiring)
+    public Servo gate;
     public IMU imu;
     public LynxModule controlHub;
     public VoltageSensor voltageSensor;
 
     // Panels TelemetryManager — set once per OpMode
-    public org.bylazar.ftcontrol.panels.Panels panels;
+    public com.bylazar.panels.Panels panels;
     public com.seattlesolvers.solverslib.util.TelemetryData telemetryData;
 
     // Live flywheel velocity offset (modified by gamepad2 dpad) — static for tuning access
@@ -318,29 +313,30 @@ public class RobotHardware {
         odomPerpend.setInverted(false);
 
         // Flywheel motors — MotorEx in VelocityControl.
-        // Feedforward: kV = 12 / maxVelocity so set(1.0) = max speed;
-        // kS = 0.15 V overcomes static friction.
+        // MotorEx applies feedforward internally using internal defaults.
         flywheelL = new MotorEx(hwMap, "flywheelL");
         flywheelR = new MotorEx(hwMap, "flywheelR");
         flywheelL.setRunMode(Motor.RunMode.VelocityControl);
         flywheelR.setRunMode(Motor.RunMode.VelocityControl);
-
-        // 384.5 ticks/rev × 6000 RPM / 60 = 38450 ticks/s
-        double flyKV = 12.0 / (384.5 * 6000.0 / 60.0);
-        flywheelL.setFeedforwardCoefficients(0.15, flyKV);
-        flywheelR.setFeedforwardCoefficients(0.15, flyKV);
 
         // Intake motor — no encoder. Driven via setPower with battery voltage compensation.
         intake = new Motor(hwMap, "intake");
         intake.setInverted(false);
 
 
-        // Phase 2 — reverse the right hood servo so the group can accept a single value
-        ServoEx _hoodL = new ServoEx(hwMap, "hoodL");
-        ServoEx _hoodR = new ServoEx(hwMap, "hoodR");
-        _hoodR.setInverted(true);
-        hood = new ServoExGroup(_hoodL, _hoodR);
-        gate = new ServoEx(hwMap, "gate");
+        // Phase 2 — both hood servos are standard FTC SDK Servo; the right servo is
+        // physically reversed in wiring so both servos rotate in the same direction
+        // when given the same position command.
+        Servo _hoodL = hwMap.servo.get("hoodL");
+        Servo _hoodR = hwMap.servo.get("hoodR");
+        // Note: setDirection only affects the firmware-side direction flag.
+        // Physical wiring determines actual rotation direction — verify both servos
+        // move to the same physical angle when setPosition(0.5) is called.
+        _hoodR.setDirection(Servo.Direction.REVERSE);
+        hood = new Servo[]{ _hoodL, _hoodR };
+
+        // Gate — standard FTC SDK Servo (angle-based, maps 0–180 degrees)
+        gate = hwMap.servo.get("gate");
         gate.setPosition(GATE_CLOSE_POSITION);
 
         // IMU — orientation read from pedroPathing.Constants so Pedro's TwoWheelLocalizer
@@ -371,8 +367,9 @@ public class RobotHardware {
         voltageSensor = hwMap.voltageSensor.get("Control Hub");
 
         // Panels
-        panels = org.bylazar.ftcontrol.panels.Panels.getInstance();
-        telemetryData = new com.seattlesolvers.solverslib.util.TelemetryData(panels.getTelemetry());
+        panels = com.bylazar.panels.Panels.INSTANCE;
+        telemetryData = new com.seattlesolvers.solverslib.util.TelemetryData(
+                com.bylazar.telemetry.PanelsTelemetry.INSTANCE.getTelemetry().getWrapper());
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -386,7 +383,7 @@ public class RobotHardware {
 
     /** Returns current IMU yaw in radians. */
     public double getYawRadians() {
-        return imu.getRobotYawPitchRollAngles().getYaw(AngleUnit.RADIANS);
+        return imu.getRobotYawPitchRollAngles().getYaw(org.firstinspires.ftc.robotcore.external.navigation.AngleUnit.RADIANS);
     }
 
     // ─────────────────────────────────────────────────────────────
@@ -517,10 +514,10 @@ public class RobotHardware {
     public boolean isDriveStallingAny() {
         stallCheckCounter++;
         boolean anyStalling =
-            fl.motor.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
-            fr.motor.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
-            bl.motor.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
-            br.motor.getCurrent(CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD;
+            fl.motorEx.getCurrent(org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
+            fr.motorEx.getCurrent(org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
+            bl.motorEx.getCurrent(org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD ||
+            br.motorEx.getCurrent(org.firstinspires.ftc.robotcore.external.navigation.CurrentUnit.AMPS) > DRIVE_STALL_CURRENT_THRESHOLD;
 
         if (anyStalling) {
             driveStalling = true;
@@ -542,7 +539,7 @@ public class RobotHardware {
         return ALLIANCE; // keep current
     }
 
-    public static Point goalCoordsForAlliance(Alliance a) {
+    public static Pose goalCoordsForAlliance(Alliance a) {
         return (a == Alliance.RED) ? RED_GOAL_COORDS : BLUE_GOAL_COORDS;
     }
 

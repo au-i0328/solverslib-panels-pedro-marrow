@@ -1,6 +1,7 @@
 package org.firstinspires.ftc.teamcode.subsystems;
 
-import com.seattlesolvers.solverslib.hardware.Motor;
+import com.seattlesolvers.solverslib.hardware.motors.Motor;
+import org.firstinspires.ftc.teamcode.RobotHardware;
 
 /**
  * Intake subsystem using SolversLib Motor (no encoder).
@@ -9,25 +10,27 @@ import com.seattlesolvers.solverslib.hardware.Motor;
  * The commanded power is scaled by 12 V / batteryVoltage so the intake
  * runs at consistent speed regardless of battery sag.
  */
-public class IntakeSubsystem extends com.seattlesolvers.solverslib.command.Subsystem {
+public class IntakeSubsystem implements com.seattlesolvers.solverslib.command.Subsystem {
     private final Motor motor;
+    private final RobotHardware hw;
 
     public IntakeSubsystem(RobotHardware hw) {
         this.motor = hw.intake;
+        this.hw = hw;
     }
 
     /**
      * Drive intake forward at full speed.
      */
     public void runForward() {
-        motor.set(RobotHardware.INTAKE_POWER / RobotHardware.batteryVoltage());
+        motor.set(RobotHardware.INTAKE_POWER / hw.batteryVoltage());
     }
 
     /**
      * Drive intake reverse at full speed.
      */
     public void runReverse() {
-        motor.set(-RobotHardware.INTAKE_POWER / RobotHardware.batteryVoltage());
+        motor.set(-RobotHardware.INTAKE_POWER / hw.batteryVoltage());
     }
 
     /**

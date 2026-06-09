@@ -2,26 +2,25 @@ package org.firstinspires.ftc.teamcode.subsystems;
 
 import static com.seattlesolvers.solverslib.util.MathUtils.clamp;
 
-import com.seattlesolvers.solverslib.hardware.servos.ServoExGroup;
+import com.qualcomm.robotcore.hardware.Servo;
 
 import org.firstinspires.ftc.teamcode.RobotHardware;
 
 /**
- * Hood subsystem using ServoExGroup.
+ * Hood subsystem using a pair of FTC SDK Servos.
  *
- * Phase 2: hoodR is hardware-reversed in RobotHardware, so both servos can be
- * driven with a single position value — the SDK handles the inversion math.
- * Phase 3: all setPosition() / setRaw() / setForDistance() calls write once
- * to the group; caching and direction correction are handled by ServoExGroup.
+ * The two hood servos are wired so that both physically rotate to the same angle
+ * when given the same position value (hoodR's direction is set to REVERSE in
+ * RobotHardware.init()). Both servos are written with the same position each
+ * loop so they stay in sync.
  *
- * Hardstops are enforced by clamp() on every write since setRange(0, 1) maps
- * the output scale but does not enforce the mechanical limits.
+ * Hardstops are enforced by clamp() on every write.
  */
-public class HoodSubsystem extends com.seattlesolvers.solverslib.command.Subsystem {
-    private final ServoExGroup hood;
+public class HoodSubsystem implements com.seattlesolvers.solverslib.command.Subsystem {
+    private final Servo[] hood;
 
     public HoodSubsystem(RobotHardware hw) {
-        this.hood = hw.hood;
+        this.hood = hw.hood;  // [0]=hoodL, [1]=hoodR
     }
 
     /**
@@ -32,7 +31,8 @@ public class HoodSubsystem extends com.seattlesolvers.solverslib.command.Subsyst
         double p = clamp(position,
                 RobotHardware.HOOD_MIN_POSITION,
                 RobotHardware.HOOD_MAX_POSITION);
-        hood.setPosition(p);
+        hood[0].setPosition(p);
+        hood[1].setPosition(p);
     }
 
     /**
@@ -58,11 +58,12 @@ public class HoodSubsystem extends com.seattlesolvers.solverslib.command.Subsyst
      * hardstop clamp for calibration or manual override.
      */
     public void setRaw(double rawPosition) {
-        hood.setPosition(rawPosition);
+        hood[0].setPosition(rawPosition);
+        hood[1].setPosition(rawPosition);
     }
 
-    /** Current position from the group leader (hoodL). */
+    /** Current position from the leader servo (hoodL). */
     public double getPosition() {
-        return hood.get();
+        return hood[0].getPosition();
     }
 }

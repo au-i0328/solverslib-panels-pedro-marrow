@@ -3,11 +3,12 @@ package org.firstinspires.ftc.teamcode.pedroPathing;
 import com.pedropathing.follower.Follower;
 import com.pedropathing.follower.FollowerConstants;
 import com.pedropathing.ftc.FollowerBuilder;
-import com.pedropathing.localization.TwoWheelLocalizerConstants;
-import com.pedropathing.pathgen.PathConstraints;
-import com.pedropathing.util.RawEncoder;
+import com.pedropathing.ftc.drivetrains.MecanumConstants;
+import com.pedropathing.ftc.localization.constants.TwoWheelConstants;
+import com.pedropathing.paths.PathConstraints;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.HardwareMap;
+import com.qualcomm.robotcore.hardware.IMU;
 import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
 
 /**
@@ -29,7 +30,7 @@ import com.qualcomm.hardware.rev.RevHubOrientationOnRobot;
  * must refer to motors plugged into the two fastest encoder ports (0 and 3 on
  * REV Control Hub) for best odometry performance.
  */
-@org.bylazar.ftcontrol.panels.configurables.annotations.Configurable
+@com.bylazar.configurables.annotations.Configurable
 public class Constants {
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -73,10 +74,11 @@ public class Constants {
     // Run "Forward Tuner": push robot forward 48 in, X should increase.
     // Run "Lateral Tuner": push robot left 48 in, Y should increase.
     // If an axis goes the wrong way, set the corresponding direction to REVERSE.
-    // Values set here are applied via TwoWheelLocalizerConstants.
+    // Values set here are applied via TwoWheelConstants.
+    // 1.0 = FORWARD, -1.0 = REVERSE (matching TwoWheelConstants convention)
 
-    public static RawEncoder.Direction FORWARD_ENCODER_DIRECTION  = RawEncoder.Direction.FORWARD;
-    public static RawEncoder.Direction STRAFE_ENCODER_DIRECTION   = RawEncoder.Direction.FORWARD;
+    public static double FORWARD_ENCODER_DIRECTION  = 1.0;   // 1.0 = FORWARD
+    public static double STRAFE_ENCODER_DIRECTION   = 1.0;   // 1.0 = FORWARD
 
     // ═══════════════════════════════════════════════════════════════════════
     // ODOMETRY TICKS-TO-INCHES MULTIPLIERS
@@ -263,7 +265,7 @@ public class Constants {
     // BUILT OBJECTS — rebuilt whenever a tunable constant changes
     // ═══════════════════════════════════════════════════════════════════════
 
-    public static TwoWheelLocalizerConstants localizerConstants;
+    public static TwoWheelConstants localizerConstants;
     public static FollowerConstants followerConstants;
     public static PathConstraints pathConstraints;
 
@@ -274,7 +276,7 @@ public class Constants {
     /** Call this whenever any constant above changes (Panels live-tune callback). */
     public static void rebuild() {
         localizerConstants =
-            new TwoWheelLocalizerConstants()
+            new TwoWheelConstants()
                 .forwardEncoder_HardwareMapName(FORWARD_ENCODER_HWMAP_NAME)
                 .strafeEncoder_HardwareMapName(STRAFE_ENCODER_HWMAP_NAME)
                 .IMU_HardwareMapName(IMU_HWMAP_NAME)
@@ -289,28 +291,22 @@ public class Constants {
         followerConstants =
             new FollowerConstants()
                 .mass(ROBOT_MASS_KG)
-                .maxPower(MAX_POWER)
-                .xVelocity(X_VELOCITY)
-                .yVelocity(Y_VELOCITY)
                 .forwardZeroPowerAcceleration(FORWARD_ZPA)
                 .lateralZeroPowerAcceleration(LATERAL_ZPA)
                 .centripetalScaling(CENTRIPETAL_SCALING)
-                .headingPIDFCoefficients(new com.pedropathing.util.PIDFCoefficients(
+                .headingPIDFCoefficients(new com.pedropathing.control.PIDFCoefficients(
                         HEADING_P, HEADING_I, HEADING_D, HEADING_F))
-                .translationalPIDFCoefficients(new com.pedropathing.util.PIDFCoefficients(
+                .translationalPIDFCoefficients(new com.pedropathing.control.PIDFCoefficients(
                         TRANSLATIONAL_P, TRANSLATIONAL_I, TRANSLATIONAL_D, TRANSLATIONAL_F))
-                .drivePIDFCoefficients(new com.pedropathing.util.FilteredPIDFCoefficients(
-                        DRIVE_P, DRIVE_I, DRIVE_D, DRIVE_T, DRIVE_F))
-                .brakingStrength(BRAKING_STRENGTH)
-                .driveKalmanFilterParameters(DRIVE_KALMAN_MODEL_COVARIANCE, DRIVE_KALMAN_DATA_COVARIANCE);
+                .drivePIDFCoefficients(new com.pedropathing.control.FilteredPIDFCoefficients(
+                        DRIVE_P, DRIVE_I, DRIVE_D, DRIVE_T, DRIVE_F));
 
         pathConstraints =
             new PathConstraints(
                 PATH_MAX_VELOCITY,
                 PATH_MAX_ACCELERATION,
                 PATH_MAX_JERK,
-                PATH_MAX_ANG_VELOCITY,
-                PATH_MAX_ANG_ACCELERATION
+                PATH_MAX_ANG_VELOCITY
             );
     }
 
@@ -328,7 +324,7 @@ public class Constants {
                 .pathConstraints(pathConstraints)
                 .twoWheelLocalizer(localizerConstants)
                 .mecanumDrivetrain(
-                    new com.pedropathing.drive.MecanumConstants()
+                    new MecanumConstants()
                         .maxPower(MAX_POWER)
                         .leftFrontMotorName(LEFT_FRONT_MOTOR)
                         .leftRearMotorName(LEFT_REAR_MOTOR)

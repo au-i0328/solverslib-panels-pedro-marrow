@@ -1,6 +1,9 @@
 package org.firstinspires.ftc.teamcode.commands;
 
+import java.util.Set;
+
 import com.seattlesolvers.solverslib.command.Command;
+import com.seattlesolvers.solverslib.command.Subsystem;
 
 import org.firstinspires.ftc.teamcode.RobotHardware;
 import org.firstinspires.ftc.teamcode.RobotState;
@@ -57,8 +60,13 @@ public class ShootCommand implements Command {
     }
 
     @Override
-    public void end() {
+    public void end(boolean interrupted) {
         gate.close();
         intake.stop();
+    }
+
+    @Override
+    public Set<Subsystem> getRequirements() {
+        return Set.of(flywheel, gate, intake);
     }
 }

@@ -4,7 +4,7 @@ import com.qualcomm.robotcore.hardware.Servo;
 
 import org.firstinspires.ftc.teamcode.RobotHardware;
 
-public class GateSubsystem extends com.seattlesolvers.solverslib.command.Subsystem {
+public class GateSubsystem implements com.seattlesolvers.solverslib.command.Subsystem {
     private final Servo gate;
 
     public GateSubsystem(RobotHardware hw) {

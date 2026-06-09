@@ -2,14 +2,15 @@ package org.firstinspires.ftc.teamcode;
 
 import com.pedropathing.follower.Follower;
 import com.pedropathing.geometry.Pose;
+import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.util.ElapsedTime;
-import com.seattlesolvers.solverslib.command.CommandOpMode;
+import com.seattlesolvers.solverslib.command.CommandScheduler;
 import com.seattlesolvers.solverslib.command.Subsystem;
 import com.seattlesolvers.solverslib.gamepad.GamepadEx;
 import com.seattlesolvers.solverslib.gamepad.GamepadKeys;
 import com.seattlesolvers.solverslib.util.TelemetryData;
-import com.skeletonarmyftc.marrow.util.Settings;
+import com.skeletonarmy.marrow.settings.Settings;
 
 import org.firstinspires.ftc.teamcode.commands.BaseZoneRTPCommand;
 import org.firstinspires.ftc.teamcode.commands.LaunchZoneRTPCommand;
@@ -49,7 +50,7 @@ import java.util.List;
  * Launch Zone RTP pulls toward launch line with driver vector override.
  */
 @TeleOp(group = "main")
-public class MainTeleOp extends CommandOpMode {
+public class MainTeleOp extends OpMode {
     private RobotHardware hw;
     private Follower follower;
 
@@ -116,16 +117,12 @@ public class MainTeleOp extends CommandOpMode {
     // Blended drive inputs from launch zone RTP
     private double blendedFwd = 0.0;
     private double blendedStrafe = 0.0;
-    private double prevDriverFwd = 0.0;
-    private double prevDriverStrafe = 0.0;
     private boolean launchZoneActive = false;
 
     // Marrow PolygonZone representing the robot's physical footprint (size set in RobotHardware)
 
     @Override
-    public void initialize() {
-        super.reset();
-
+    public void init() {
         hw = new RobotHardware();
         hw.init(hardwareMap);
 
@@ -154,12 +151,12 @@ public class MainTeleOp extends CommandOpMode {
             }
             @Override
             public double getAngleToGoal() {
-                var r = limelight.getLatestResult();
+                com.qualcomm.hardware.limelightvision.LLResult r = limelight.getLatestResult();
                 return r != null ? r.getTx() : 0;
             }
             @Override
             public boolean hasTarget() {
-                var r = limelight.getLatestResult();
+                com.qualcomm.hardware.limelightvision.LLResult r = limelight.getLatestResult();
                 return r != null && r.isValid();
             }
         });
@@ -173,14 +170,18 @@ public class MainTeleOp extends CommandOpMode {
             @Override public double getH() {
                 return hw.getCorrectedH(follower.getPose().getHeading());
             }
-            @Override public com.pedropathing.geometry.Point getGoalCoords() {
+            @Override public Pose getGoalCoords() {
                 return RobotHardware.GOAL_COORDS;
             }
         });
-        controller.setReadyCheck(this::isReadyToShoot);
+        controller.setReadyCheck(() -> isReadyToShoot(
+                hw.getCorrectedX(follower.getPose().getX()),
+                hw.getCorrectedY(follower.getPose().getY()),
+                hw.getCorrectedH(follower.getPose().getHeading())
+        ));
         controller.setShootDoneCallback(() -> {
-            driver.resetGamepadRumble();
-            operator.resetGamepadRumble();
+            gamepad1.stopRumble();
+            gamepad2.stopRumble();
             shootHoodLocked = false;
         });
 
@@ -215,7 +216,8 @@ public class MainTeleOp extends CommandOpMode {
         operator = new GamepadEx(gamepad2);
 
         // Panels telemetry
-        telemetryData = new TelemetryData(hw.panels.getTelemetry());
+        telemetryData = new TelemetryData(
+                com.bylazar.telemetry.PanelsTelemetry.INSTANCE.getTelemetry().getWrapper());
 
         // Limelight init
         limelight = hardwareMap.get(
@@ -223,8 +225,8 @@ public class MainTeleOp extends CommandOpMode {
         limelight.setPollRateHz(100);
         limelight.start();
 
-        // Register subsystems
-        registerSubsystems(List.of(drive, flywheel, intake, gate, hood));
+        // Register subsystems with the command scheduler
+        CommandScheduler.getInstance().registerSubsystem(drive, flywheel, intake, gate, hood);
 
         // Bulk caching
         hw.clearBulkCache();
@@ -279,6 +281,7 @@ public class MainTeleOp extends CommandOpMode {
         hw.clearBulkCache();
         double dt = loopTimer.seconds();
         loopTimer.reset();
+        double batt = hw.batteryVoltage();
 
         // ── 1. LOCALIZATION ──────────────────────────────────────
         // Pose restore: runs once on the first loop tick after start().
@@ -304,7 +307,7 @@ public class MainTeleOp extends CommandOpMode {
         // When the localizer was just reset (pose restore, Touchpad, or Share), accept
         // any valid reading immediately to anchor the filters — don't wait for a fresh
         // frame and let Kalman uncertainty grow in the meantime.
-        var result = limelight.getLatestResult();
+        com.qualcomm.hardware.limelightvision.LLResult result = limelight.getLatestResult();
         boolean useResult = result != null && result.isValid();
         if (useResult) {
             if (!localizerJustReset && result.getStaleness() >= 0.1) {
@@ -312,11 +315,13 @@ public class MainTeleOp extends CommandOpMode {
             }
         }
         if (useResult) {
-            double[] botpose = result.getBotpose_MT2();
-            if (botpose != null && botpose.length >= 6) {
+            org.firstinspires.ftc.robotcore.external.navigation.Pose3D botpose = result.getBotpose_MT2();
+            if (botpose != null) {
                 hw.updateLocalizerFromVision(
                     odoX, odoY, odoH,
-                    botpose[0], botpose[1], Math.toRadians(botpose[5])
+                    botpose.getPosition().x,
+                    botpose.getPosition().y,
+                    botpose.getOrientation().getYaw(org.firstinspires.ftc.robotcore.external.navigation.AngleUnit.RADIANS)  // yaw in radians
                 );
             }
         }
@@ -361,7 +366,7 @@ public class MainTeleOp extends CommandOpMode {
             localizerJustReset = true;
             driveYawOffset = 0.0;
             // Vibrate 200 ms to confirm reset
-            driver.rumble(200);
+            gamepad1.rumble(200);
         }
 
         // Gamepad1 Share → re-seed pose from MegaTag vision (edge-triggered)
@@ -374,7 +379,7 @@ public class MainTeleOp extends CommandOpMode {
         RobotState state = controller.getState();
 
         // ── 4. ALIGNMENT + FALLBACK HEADING ───────────────────
-        double poseDist = getPoseDistance();
+        double poseDist = getPoseDistance(robotX, robotY);
 
         // Auto-align: compute rotation correction from limelight tx
         double rotationCorrection = 0.0;
@@ -384,8 +389,8 @@ public class MainTeleOp extends CommandOpMode {
             // Fallback: use odometry to turn toward general direction of goal
             double odomHeadingToGoal = Math.toDegrees(
                 Math.atan2(
-                    RobotHardware.GOAL_COORDS.y - robotY,
-                    RobotHardware.GOAL_COORDS.x - robotX
+                    RobotHardware.GOAL_COORDS.getY() - robotY,
+                    RobotHardware.GOAL_COORDS.getX() - robotX
                 )
             );
             double headingError = odomHeadingToGoal - Math.toDegrees(robotH);
@@ -396,17 +401,17 @@ public class MainTeleOp extends CommandOpMode {
         }
 
         // ── 5. BASE ZONE & LAUNCH ZONE RTP ──────────────────────────
-        // Gamepad2 left-stick + right-stick buttons held → Base Zone pull (highest priority)
-        boolean baseZoneActive = operator.isDown(GamepadKeys.Button.LEFT_STICK_BUTTON)
-                             && operator.isDown(GamepadKeys.Button.RIGHT_STICK_BUTTON);
+        // Base Zone active when operator holds Share + Option (per instructions.md)
+        boolean baseZoneActive = operator.isDown(GamepadKeys.Button.SHARE)
+                             && operator.isDown(GamepadKeys.Button.OPTION);
 
         // Right trigger held while aligning/aligned → Launch Zone pull
         // Only activates when robot footprint is NOT even partially in either launch zone
         RobotHardware.ROBOT_ZONE.setPosition(robotX, robotY);
-        RobotHardware.ROBOT_ZONE.setRotation(robotH);
+        RobotHardware.ROBOT_ZONE.rotateBy(robotH);
         boolean outsideZones = !RobotHardware.ROBOT_ZONE.isInside(RobotHardware.CLOSE_LAUNCH_ZONE)
                             && !RobotHardware.ROBOT_ZONE.isInside(RobotHardware.FAR_LAUNCH_ZONE);
-        boolean rightTrigger = driver.getTrigger(GamepadKeys.Trigger.RIGHT_TRIGGER) > 0.1;
+        boolean rightTrigger = driver.getTrigger(GamepadKeys.Trigger.RIGHT_TRIGGER) > 0.15;
         launchZoneActive = rightTrigger
                 && (state == RobotState.ALIGNING || state == RobotState.ALIGNED)
                 && outsideZones;
@@ -420,6 +425,13 @@ public class MainTeleOp extends CommandOpMode {
             baseZoneRTP.setActive(false);
             launchZoneRTP.setActive(true);
             launchZoneRTP.execute();
+            // Once Marrow detects the robot inside any launch zone for 300 ms, the
+            // command ends and we fall through to raw driver input (no more pull).
+            if (launchZoneRTP.isFinished()) {
+                launchZoneRTP.setActive(false);
+                blendedFwd = -driver.getLeftY();
+                blendedStrafe = -driver.getLeftX();
+            }
         } else {
             baseZoneRTP.setActive(false);
             launchZoneRTP.setActive(false);
@@ -428,7 +440,7 @@ public class MainTeleOp extends CommandOpMode {
         }
 
         // ── 6. FLYWHEEL ──────────────────────────────────────
-        flywheel.update(dt);
+        flywheel.update(dt, batt);
 
         // ── 7. HOOD ───────────────────────────────────────
         // Instructions.md: hood angle set at all times if distance available
@@ -478,42 +490,48 @@ public class MainTeleOp extends CommandOpMode {
         // ── 9. isReadyToShoot VIBRATION ────────────────────
         // 50ms on → 50ms off → 50ms on: fires once on the rising edge of isReadyToShoot.
         // shareHeld overrides silently without triggering the ready rumble.
-        boolean ready = isReadyToShoot(robotX, robotY);
+        boolean ready = isReadyToShoot(robotX, robotY, robotH);
         boolean shareHeld = operator.isDown(GamepadKeys.Button.SHARE);
 
         if (ready && !wasReady() && !shareHeld) {
-            // Rising edge of ready — start rumble sequence
+            // Rising edge of ready — start rumble sequence: 50ms on → 50ms off → 50ms on
             rumblePhase = RumblePhase.RUMBLE_1;
             rumbleTimer.reset();
-            driver.rumble(50);
-            operator.rumble(50);
+            gamepad1.rumble(50);
+            gamepad2.rumble(50);
+        } else if (rumblePhase == RumblePhase.RUMBLE_1 && rumbleTimer.seconds() >= 0.05) {
+            // 50ms on done — enter pause (stop rumble for 50ms)
+            rumblePhase = RumblePhase.PAUSE;
+            rumbleTimer.reset();
+            gamepad1.stopRumble();
+            gamepad2.stopRumble();
         } else if (rumblePhase != RumblePhase.OFF && rumbleTimer.seconds() >= 1.0) {
-            // 50ms on + 50ms off + 50ms on = 150ms total — 1.0s safety timeout
+            // Safety timeout — something went wrong, force off
             rumblePhase = RumblePhase.OFF;
-            driver.stopRumble();
-            operator.stopRumble();
+            gamepad1.stopRumble();
+            gamepad2.stopRumble();
         } else if (rumblePhase == RumblePhase.PAUSE && rumbleTimer.seconds() >= 0.05) {
             // Pause done → second rumble
             rumblePhase = RumblePhase.RUMBLE_2;
             rumbleTimer.reset();
-            driver.rumble(50);
-            operator.rumble(50);
+            gamepad1.rumble(50);
+            gamepad2.rumble(50);
         } else if (rumblePhase == RumblePhase.RUMBLE_2 && rumbleTimer.seconds() >= 0.05) {
             // Second rumble done
             rumblePhase = RumblePhase.OFF;
-            driver.stopRumble();
-            operator.stopRumble();
+            gamepad1.stopRumble();
+            gamepad2.stopRumble();
         } else if (!ready && !shareHeld) {
             // Robot is not ready — cancel any in-progress rumble
             rumblePhase = RumblePhase.OFF;
-            driver.stopRumble();
-            operator.stopRumble();
+            gamepad1.stopRumble();
+            gamepad2.stopRumble();
         }
 
-        // shareHeld override edge detection: 2 blips on rising edge
+        // shareHeld override: brief rumble notification on rising edge
         if (shareHeld && !wasShareHeld()) {
-            driver.rumbleBlips(2);
-            operator.rumbleBlips(2);
+            gamepad1.rumble(80);
+            gamepad2.rumble(80);
         }
         setReadyPrev(ready, shareHeld);
 
@@ -535,24 +553,24 @@ public class MainTeleOp extends CommandOpMode {
     // HELPERS
     // ─────────────────────────────────────────────────────────────
 
-    private double getPoseDistance() {
-        Point goal = RobotHardware.GOAL_COORDS;
-        double dx = goal.x - robotX;
-        double dy = goal.y - robotY;
+    private double getPoseDistance(double robotX, double robotY) {
+        Pose goal = RobotHardware.GOAL_COORDS;
+        double dx = goal.getX() - robotX;
+        double dy = goal.getY() - robotY;
         double dist = Math.sqrt(dx * dx + dy * dy);
         if (dist < RobotHardware.LIMELIGHT_DIST_MIN || dist > RobotHardware.LIMELIGHT_DIST_MAX) return -1;
         return dist;
     }
 
-    private boolean isReadyToShoot(double robotX, double robotY) {
+    private boolean isReadyToShoot(double robotX, double robotY, double robotH) {
         if (controller.getState() != RobotState.ALIGNED) return false;
-        var r = limelight.getLatestResult();
+        com.qualcomm.hardware.limelightvision.LLResult r = limelight.getLatestResult();
         if (r == null || !r.isValid()) return false;
 
         // isReadyToShoot is true when the robot footprint (partial or full) is inside
         // either launch zone, flywheels are up to speed, and pose distance is valid.
         RobotHardware.ROBOT_ZONE.setPosition(robotX, robotY);
-        RobotHardware.ROBOT_ZONE.setRotation(robotH);
+        RobotHardware.ROBOT_ZONE.rotateBy(robotH);
         boolean inCloseZone = RobotHardware.ROBOT_ZONE.isInside(RobotHardware.CLOSE_LAUNCH_ZONE);
         boolean inFarZone   = RobotHardware.ROBOT_ZONE.isInside(RobotHardware.FAR_LAUNCH_ZONE);
         if (!inCloseZone && !inFarZone) return false;
@@ -563,7 +581,7 @@ public class MainTeleOp extends CommandOpMode {
         double tol = RobotHardware.FLYWHEEL_READY_TOLERANCE;
 
         boolean velocityOK = Math.abs(velL - target) < tol && Math.abs(velR - target) < tol;
-        double dist = getPoseDistance();
+        double dist = getPoseDistance(robotX, robotY);
         boolean distOK = dist > 0 && !Double.isNaN(dist);
 
         return velocityOK && distOK;
@@ -628,21 +646,19 @@ public class MainTeleOp extends CommandOpMode {
      * Call this to recover from odometry drift at any time during the match.
      */
     private void reinitializePoseFromLimelight() {
-        var result = limelight.getLatestResult();
+        com.qualcomm.hardware.limelightvision.LLResult result = limelight.getLatestResult();
         if (result == null || !result.isValid()) {
             return;
         }
 
-        double[] botpose = result.getBotpose_MT2();
-        if (botpose == null || botpose.length < 6) {
+        org.firstinspires.ftc.robotcore.external.navigation.Pose3D botpose = result.getBotpose_MT2();
+        if (botpose == null) {
             return;
         }
 
-        double visionX = botpose[0];
-        double visionY = botpose[1];
-        double visionH = Math.toRadians(botpose[5]);
-
-        // Target yaw based on alliance:
+        double visionX = botpose.getPosition().x;
+        double visionY = botpose.getPosition().y;
+        double visionH = botpose.getOrientation().getYaw(org.firstinspires.ftc.robotcore.external.navigation.AngleUnit.RADIANS); // yaw in radians
         //   RED  → 0 rad  (facing +X / scoring wall)
         //   BLUE → π rad  (facing −X / scoring wall)
         double targetYaw = (RobotHardware.ALLIANCE == RobotHardware.Alliance.RED) ? 0.0 : Math.PI;

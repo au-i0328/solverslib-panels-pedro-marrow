@@ -1,8 +1,8 @@
 package org.firstinspires.ftc.teamcode;
 
-import com.pedropathing.geometry.Point;
 import com.qualcomm.robotcore.hardware.Gamepad;
 import com.qualcomm.robotcore.util.ElapsedTime;
+import com.pedropathing.geometry.Pose;
 
 import org.firstinspires.ftc.teamcode.commands.ShootCommand;
 import org.firstinspires.ftc.teamcode.subsystems.FlywheelSubsystem;
@@ -52,6 +52,13 @@ public class MasterController {
     private boolean aligningActive = false; // true once crosshair first comes on target
     private boolean wasAligned = false;
 
+    /**
+     * Degrees — if |tx| exceeds this the crosshair is considered off-target and the
+     * robot drops from ALIGNED back to ALIGNING to re-acquire. Tune via Panels or
+     * set directly in code before init.
+     */
+    public static double ALIGNMENT_ON_TARGET_THRESHOLD_DEGREES = 2.0;
+
     // isReadyToShoot gating
     public interface ReadyCheck {
         boolean isReady();
@@ -80,7 +87,7 @@ public class MasterController {
         double getX();
         double getY();
         double getH(); // radians
-        Point getGoalCoords();
+        Pose getGoalCoords();
     }
     private PoseProvider poseProvider;
 
@@ -134,7 +141,7 @@ public class MasterController {
         if (wasShooting) {
             shootCommand.execute();
             if (shootCommand.isFinished()) {
-                shootCommand.end();
+                shootCommand.end(false);
                 wasShooting = false;
             }
             return;
@@ -142,11 +149,11 @@ public class MasterController {
 
         // ── EDGE DETECTION ─────────────────────────────────────────
         boolean leftBumper   = gamepad1.left_bumper || gamepad2.left_bumper;
-        boolean rightTrigger = gamepad1.right_trigger > 0.5;
+        boolean rightTrigger = gamepad1.right_trigger > 0.1;
 
         // Left trigger: edge-triggered (pressed, not held)
-        boolean leftTriggerRising = (gamepad1.left_trigger > 0.5) && !prevLeftTrigger;
-        prevLeftTrigger = gamepad1.left_trigger > 0.5;
+        boolean leftTriggerRising = (gamepad1.left_trigger > 0.1) && !prevLeftTrigger;
+        prevLeftTrigger = gamepad1.left_trigger > 0.1;
 
         // Share: edge-detected for override
         boolean shareRising = gamepad2.share && !prevShare;
@@ -210,8 +217,7 @@ public class MasterController {
                 if (limelightProvider != null && limelightProvider.hasTarget()) {
                     // Tag visible: accumulate time only while crosshair is on target
                     double tx = Math.abs(limelightProvider.getAngleToGoal());
-                    double onTargetThreshold = 2.0; // degrees — tune via RobotHardware
-                    if (tx < onTargetThreshold) {
+                    if (tx < ALIGNMENT_ON_TARGET_THRESHOLD_DEGREES) {
                         // Crosshair aligned: accumulate time
                         aligningActive = true;
                     } else {
@@ -251,6 +257,18 @@ public class MasterController {
                     break;
                 }
 
+                // Crosshair has drifted off target → drop back to ALIGNING to re-acquire.
+                // Without this the robot silently stays ALIGNED while pointing the wrong way.
+                if (limelightProvider != null) {
+                    double tx = Math.abs(limelightProvider.getAngleToGoal());
+                    if (tx >= ALIGNMENT_ON_TARGET_THRESHOLD_DEGREES) {
+                        state = RobotState.ALIGNING;
+                        alignmentTimer.reset();
+                        wasAligned = false;
+                        break;
+                    }
+                }
+
                 // Left trigger (edge-triggered) fires the shot
                 if (leftTriggerRising) {
                     // isReadyToShoot is normally checked here, but gamepad2.share overrides it.
@@ -276,8 +294,8 @@ public class MasterController {
         if (poseProvider == null) return 0;
         double rx = poseProvider.getX();
         double ry = poseProvider.getY();
-        Point goal = poseProvider.getGoalCoords();
-        return Math.atan2(goal.y - ry, goal.x - rx);
+        Pose goal = poseProvider.getGoalCoords();
+        return Math.atan2(goal.getY() - ry, goal.getX() - rx);
     }
 
     public void reset() {

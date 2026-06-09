@@ -1,6 +1,7 @@
 package org.firstinspires.ftc.teamcode.subsystems;
 
-import com.seattlesolvers.solverslib.hardware.MotorEx;
+import com.seattlesolvers.solverslib.hardware.motors.MotorEx;
+import org.firstinspires.ftc.teamcode.RobotHardware;
 
 /**
  * Flywheel subsystem using SolversLib MotorEx in VelocityControl.
@@ -23,7 +24,7 @@ import com.seattlesolvers.solverslib.hardware.MotorEx;
  * is only used on the drive motors. The integral clamp (MAX_INTEGRAL_VOLTAGE)
  * prevents wind-up without needing a current ceiling.
  */
-public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Subsystem {
+public class FlywheelSubsystem implements com.seattlesolvers.solverslib.command.Subsystem {
     private final MotorEx motorL;
     private final MotorEx motorR;
 
@@ -60,10 +61,10 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
     /**
      * Voltage-based closed-loop velocity update — call every loop.
      *
-     * @param dt loop time in seconds (pass loopTimer.seconds() from the OpMode)
+     * @param dt   loop time in seconds (pass loopTimer.seconds() from the OpMode)
+     * @param batt current battery voltage (call hw.batteryVoltage() in the OpMode)
      */
-    public void update(double dt) {
-        double batt = RobotHardware.batteryVoltage();
+    public void update(double dt, double batt) {
 
         applyVoltageLoop(motorL, targetVelocity, dt, batt,
                 RobotHardware.FLYWHEEL_TPR,
@@ -119,9 +120,9 @@ public class FlywheelSubsystem extends com.seattlesolvers.solverslib.command.Sub
         }
     }
 
-    /** Legacy zero-argument update — assumes 1 ms loop. Prefer update(double dt). */
+    /** Legacy zero-argument update — assumes 1 ms loop. Prefer update(double dt, double batt). */
     public void update() {
-        update(0.001);
+        update(0.001, 12.0);
     }
 
     public void reset() {

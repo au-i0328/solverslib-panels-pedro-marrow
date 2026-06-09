@@ -1,7 +1,11 @@
 package org.firstinspires.ftc.teamcode.commands;
 
+import java.util.Set;
+
 import com.pedropathing.follower.Follower;
+import com.pedropathing.geometry.Pose;
 import com.seattlesolvers.solverslib.command.Command;
+import com.seattlesolvers.solverslib.command.Subsystem;
 
 import org.firstinspires.ftc.teamcode.RobotHardware;
 
@@ -9,12 +13,9 @@ import org.firstinspires.ftc.teamcode.RobotHardware;
  * Run-to-point (RTP) command using Pedro Pathing Follower.
  * Non-blocking — drives the robot toward a target Pose without blocking the loop.
  *
- * @param follower       Pedro Pathing Follower instance
- * @param x             target X coordinate (Pedro field coords)
- * @param y             target Y coordinate (Pedro field coords)
- * @param heading       target heading in radians
- * @param holdEnd       if true, holds position when path ends; if false, cancels immediately
- * @param maxSpeed      global max speed multiplier (0.0 – 1.0)
+ * Uses Follower.holdPoint(Pose, boolean) where:
+ *   - holdEnd=true → robot holds position when path ends
+ *   - holdEnd=false → robot cancels immediately when done
  */
 public class RunToPointCommand implements Command {
     private final Follower follower;
@@ -41,10 +42,7 @@ public class RunToPointCommand implements Command {
     public void execute() {
         if (!started) {
             started = true;
-            follower.follow(
-                new com.pedropathing.geometry.Pose(x, y, heading),
-                holdEnd
-            );
+            follower.holdPoint(new Pose(x, y, heading), holdEnd);
             follower.setMaxPower(maxSpeed);
         }
     }
@@ -55,9 +53,12 @@ public class RunToPointCommand implements Command {
     }
 
     @Override
-    public void end() {
-        if (holdEnd) {
-            follower.cancelFollow();
-        }
+    public void end(boolean interrupted) {
+        // Follower auto-holds if holdEnd=true; nothing needed here
+    }
+
+    @Override
+    public Set<Subsystem> getRequirements() {
+        return Set.of(); // Follower does not require any Subsystem
     }
 }

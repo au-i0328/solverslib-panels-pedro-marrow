@@ -1,6 +1,9 @@
 package org.firstinspires.ftc.teamcode.commands;
 
+import java.util.Set;
+
 import com.seattlesolvers.solverslib.command.Command;
+import com.seattlesolvers.solverslib.command.Subsystem;
 
 import org.firstinspires.ftc.teamcode.RobotHardware;
 import org.firstinspires.ftc.teamcode.subsystems.FlywheelSubsystem;
@@ -13,13 +16,16 @@ import org.firstinspires.ftc.teamcode.subsystems.HoodSubsystem;
 public class FlywheelRunCommand implements Command {
     private final FlywheelSubsystem flywheel;
     private final HoodSubsystem hood;
+    private final java.util.function.Supplier<Double> getBatteryVoltage;
     private double limelightDistance; // inches, from Limelight — mutable so it can be updated
 
     public FlywheelRunCommand(FlywheelSubsystem flywheel, HoodSubsystem hood,
-                              double limelightDistance) {
+                              double limelightDistance,
+                              java.util.function.Supplier<Double> getBatteryVoltage) {
         this.flywheel = flywheel;
         this.hood = hood;
         this.limelightDistance = limelightDistance;
+        this.getBatteryVoltage = getBatteryVoltage;
     }
 
     /**
@@ -32,10 +38,7 @@ public class FlywheelRunCommand implements Command {
 
     @Override
     public void execute() {
-        // Voltage clamping uses dt=0.015 as a conservative fixed estimate.
-        // The actual loop dt is passed from the OpMode; call update(dt) instead of
-        // relying on this command when possible.
-        flywheel.update(0.015);
+        flywheel.update(0.015, getBatteryVoltage.get());
 
         if (limelightDistance > 0) {
             hood.setForDistance(
@@ -53,5 +56,10 @@ public class FlywheelRunCommand implements Command {
     }
 
     @Override
-    public void end() {}
+    public void end(boolean interrupted) {}
+
+    @Override
+    public Set<Subsystem> getRequirements() {
+        return Set.of(flywheel, hood);
+    }
 }
