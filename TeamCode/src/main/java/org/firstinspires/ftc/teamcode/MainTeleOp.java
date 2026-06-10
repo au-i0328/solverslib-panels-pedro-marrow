@@ -403,7 +403,7 @@ public class MainTeleOp extends OpMode {
         // ── 5. BASE ZONE & LAUNCH ZONE RTP ──────────────────────────
         // Base Zone active when operator holds Share + Option (per instructions.md)
         boolean baseZoneActive = operator.isDown(GamepadKeys.Button.SHARE)
-                             && operator.isDown(GamepadKeys.Button.OPTION);
+                             && operator.isDown(GamepadKeys.Button.OPTIONS);
 
         // Right trigger held while aligning/aligned → Launch Zone pull
         // Only activates when robot footprint is NOT even partially in either launch zone
